@@ -1,0 +1,214 @@
+# Channel configuration template
+# Defines policies, capabilities, and consortium
+
+Organizations:
+  - &OrdererOrg
+    Name: OrdererOrg
+    ID: OrdererMSP
+    MSPDir: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('OrdererMSP.member')"
+      Writers:
+        Type: Signature
+        Rule: "OR('OrdererMSP.member')"
+      Admins:
+        Type: Signature
+        Rule: "OR('OrdererMSP.admin')"
+    OrdererEndpoints:
+      - orderer1.orderer.${BRAND_DOMAIN}:7050
+      - orderer2.orderer.${BRAND_DOMAIN}:8050
+      - orderer3.orderer.${BRAND_DOMAIN}:9050
+
+  - &Brand
+    Name: ${BRAND_NAME}MSP
+    ID: ${BRAND_NAME}MSP
+    MSPDir: ../organizations/peerOrganizations/${BRAND_NAME}.${BRAND_DOMAIN}/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('${BRAND_NAME}MSP.admin', '${BRAND_NAME}MSP.peer', '${BRAND_NAME}MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('${BRAND_NAME}MSP.admin', '${BRAND_NAME}MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('${BRAND_NAME}MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('${BRAND_NAME}MSP.peer')"
+
+  - &Supplier1
+    Name: Supplier1MSP
+    ID: Supplier1MSP
+    MSPDir: ../organizations/peerOrganizations/supplier1.${BRAND_DOMAIN}/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Supplier1MSP.admin', 'Supplier1MSP.peer', 'Supplier1MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Supplier1MSP.admin', 'Supplier1MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Supplier1MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Supplier1MSP.peer')"
+
+  - &Manufacturer1
+    Name: Manufacturer1MSP
+    ID: Manufacturer1MSP
+    MSPDir: ../organizations/peerOrganizations/manufacturer1.${BRAND_DOMAIN}/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Manufacturer1MSP.admin', 'Manufacturer1MSP.peer', 'Manufacturer1MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Manufacturer1MSP.admin', 'Manufacturer1MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Manufacturer1MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Manufacturer1MSP.peer')"
+
+  - &Retailer1
+    Name: Retailer1MSP
+    ID: Retailer1MSP
+    MSPDir: ../organizations/peerOrganizations/retailer1.${BRAND_DOMAIN}/msp
+    Policies:
+      Readers:
+        Type: Signature
+        Rule: "OR('Retailer1MSP.admin', 'Retailer1MSP.peer', 'Retailer1MSP.client')"
+      Writers:
+        Type: Signature
+        Rule: "OR('Retailer1MSP.admin', 'Retailer1MSP.client')"
+      Admins:
+        Type: Signature
+        Rule: "OR('Retailer1MSP.admin')"
+      Endorsement:
+        Type: Signature
+        Rule: "OR('Retailer1MSP.peer')"
+
+Capabilities:
+  Channel: &ChannelCapabilities
+    V2_5: true
+
+  Orderer: &OrdererCapabilities
+    V2_0: true
+
+  Application: &ApplicationCapabilities
+    V2_5: true
+
+Application: &ApplicationDefaults
+  Organizations:
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+    LifecycleEndorsement:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Endorsement"
+    Endorsement:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Endorsement"
+  Capabilities:
+    <<: *ApplicationCapabilities
+
+Orderer: &OrdererDefaults
+  OrdererType: etcdraft
+  Addresses:
+    - orderer1.orderer.${BRAND_DOMAIN}:7050
+    - orderer2.orderer.${BRAND_DOMAIN}:8050
+    - orderer3.orderer.${BRAND_DOMAIN}:9050
+  BatchTimeout: 2s
+  BatchSize:
+    MaxMessageCount: 10
+    AbsoluteMaxBytes: 99 MB
+    PreferredMaxBytes: 512 KB
+  EtcdRaft:
+    Consenters:
+      - Host: orderer1.orderer.${BRAND_DOMAIN}
+        Port: 7050
+        ClientTLSCert: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt
+        ServerTLSCert: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt
+      - Host: orderer2.orderer.${BRAND_DOMAIN}
+        Port: 8050
+        ClientTLSCert: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer2.orderer.${BRAND_DOMAIN}/tls/server.crt
+        ServerTLSCert: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer2.orderer.${BRAND_DOMAIN}/tls/server.crt
+      - Host: orderer3.orderer.${BRAND_DOMAIN}
+        Port: 9050
+        ClientTLSCert: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer3.orderer.${BRAND_DOMAIN}/tls/server.crt
+        ServerTLSCert: ../organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer3.orderer.${BRAND_DOMAIN}/tls/server.crt
+  Organizations:
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+    BlockValidation:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+
+Channel: &ChannelDefaults
+  Policies:
+    Readers:
+      Type: ImplicitMeta
+      Rule: "ANY Readers"
+    Writers:
+      Type: ImplicitMeta
+      Rule: "ANY Writers"
+    Admins:
+      Type: ImplicitMeta
+      Rule: "MAJORITY Admins"
+  Capabilities:
+    <<: *ChannelCapabilities
+
+Profiles:
+  LuxuryOrdererGenesis:
+    <<: *ChannelDefaults
+    Orderer:
+      <<: *OrdererDefaults
+      Organizations:
+        - *OrdererOrg
+      Capabilities: *OrdererCapabilities
+    Application:
+      <<: *ApplicationDefaults
+      Organizations:
+        - *Brand
+        - *Supplier1
+        - *Manufacturer1
+        - *Retailer1
+    Consortiums:
+      LuxuryConsortium:
+        Organizations:
+          - *Brand
+          - *Supplier1
+          - *Manufacturer1
+          - *Retailer1
+
+  LuxurySupplyChain:
+    Consortium: LuxuryConsortium
+    <<: *ChannelDefaults
+    Application:
+      <<: *ApplicationDefaults
+      Organizations:
+        - *Brand
+        - *Supplier1
+        - *Manufacturer1
+        - *Retailer1
+      Capabilities: *ApplicationCapabilities

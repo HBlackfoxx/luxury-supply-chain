@@ -1,0 +1,144 @@
+# Example configuration for a luxury handbag brand
+# This demonstrates how to configure the network for a specific luxury brand
+
+brand:
+  id: "luxe-bags"
+  name: "LuxeBags"
+  description: "Premium luxury handbag manufacturer"
+  
+network:
+  organizations:
+    - id: "luxebags"
+      name: "LuxeBags"
+      type: "brand_owner"
+      mspId: "LuxeBagsMSP"
+      peers:
+        - name: "peer0"
+          port: 7051
+          chaincodePort: 7052
+          operationsPort: 9443
+        - name: "peer1"
+          port: 8051
+          chaincodePort: 8052
+          operationsPort: 9444
+    
+    - id: "italianleather"
+      name: "Italian Leather Co"
+      type: "supplier"
+      mspId: "ItalianLeatherMSP"
+      peers:
+        - name: "peer0"
+          port: 9051
+          chaincodePort: 9052
+          operationsPort: 9445
+    
+    - id: "craftworkshop"
+      name: "Master Craft Workshop"
+      type: "manufacturer"
+      mspId: "CraftWorkshopMSP"
+      peers:
+        - name: "peer0"
+          port: 10051
+          chaincodePort: 10052
+          operationsPort: 9446
+    
+    - id: "luxuryretail"
+      name: "Luxury Retail Boutique"
+      type: "retailer"
+      mspId: "LuxuryRetailMSP"
+      peers:
+        - name: "peer0"
+          port: 11051
+          chaincodePort: 11052
+          operationsPort: 9447
+  
+  orderers:
+    - name: "orderer1"
+      port: 7050
+      operationsPort: 8443
+      organization: "orderer"
+    - name: "orderer2"
+      port: 8050
+      operationsPort: 8444
+      organization: "orderer"
+    - name: "orderer3"
+      port: 9050
+      operationsPort: 8445
+      organization: "orderer"
+  
+  channels:
+    - name: "luxury-supply-chain"
+      consortium: "LuxuryConsortium"
+      application:
+        organizations:
+          - "luxebags"
+          - "italianleather"
+          - "craftworkshop"
+          - "luxuryretail"
+
+consensus:
+  type: "proof-of-luxury-authority"
+  parameters:
+    weights:
+      brand_owner: 40
+      supplier: 20
+      manufacturer: 20
+      retailer: 15
+      ai_advisory: 5
+    minParticipation: 70
+    reputation:
+      enabled: true
+      initialScore: 100
+    aiAdvisory:
+      enabled: true
+      confidenceThreshold: 0.85
+
+products:
+  categories:
+    - id: "handbags"
+      name: "Luxury Handbags"
+      attributes:
+        - "serial_number"
+        - "model"
+        - "leather_type"
+        - "hardware_material"
+        - "craftsman_id"
+        - "production_date"
+        - "authenticity_certificate"
+        - "dimensions"
+        - "weight"
+      verificationRequirements:
+        - "leather_verification"
+        - "hardware_inspection"
+        - "stitching_pattern_analysis"
+        - "serial_validation"
+        - "craftsman_signature_verification"
+      ai_models:
+        - "leather_authenticity_model"
+        - "stitching_pattern_recognition"
+        - "hardware_quality_assessment"
+        - "logo_verification"
+
+integrations:
+  erp:
+    enabled: true
+    type: "simulated"
+    endpoints:
+      inventory: "/api/v1/inventory"
+      orders: "/api/v1/orders"
+      products: "/api/v1/products"
+  ai:
+    enabled: true
+    service: "internal"
+    endpoints:
+      analyze: "/api/v1/analyze"
+      train: "/api/v1/train"
+      verify: "/api/v1/verify"
+
+security:
+  tls:
+    enabled: true
+    clientAuthRequired: true
+  identity:
+    provider: "fabric-ca"
+    adminIdentity: "LuxeBagsAdmin"

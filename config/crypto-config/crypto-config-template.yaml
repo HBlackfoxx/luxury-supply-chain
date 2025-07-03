@@ -1,0 +1,65 @@
+# Crypto material configuration template
+# Generates certificates for all network participants
+
+OrdererOrgs:
+  - Name: Orderer
+    Domain: orderer.${BRAND_DOMAIN}
+    EnableNodeOUs: true
+    Specs:
+      - Hostname: orderer1
+        SANS:
+          - localhost
+          - 127.0.0.1
+      - Hostname: orderer2
+        SANS:
+          - localhost
+          - 127.0.0.1
+      - Hostname: orderer3
+        SANS:
+          - localhost
+          - 127.0.0.1
+
+PeerOrgs:
+  - Name: ${BRAND_NAME}
+    Domain: ${BRAND_NAME}.${BRAND_DOMAIN}
+    EnableNodeOUs: true
+    Template:
+      Count: 2
+      SANS:
+        - localhost
+        - 127.0.0.1
+    Users:
+      Count: 5
+
+  - Name: Supplier1
+    Domain: supplier1.${BRAND_DOMAIN}
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+        - 127.0.0.1
+    Users:
+      Count: 3
+
+  - Name: Manufacturer1
+    Domain: manufacturer1.${BRAND_DOMAIN}
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+        - 127.0.0.1
+    Users:
+      Count: 3
+
+  - Name: Retailer1
+    Domain: retailer1.${BRAND_DOMAIN}
+    EnableNodeOUs: true
+    Template:
+      Count: 1
+      SANS:
+        - localhost
+        - 127.0.0.1
+    Users:
+      Count: 3
