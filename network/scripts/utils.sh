@@ -36,14 +36,26 @@ version: '3.7'
 volumes:
 EOF
     
-    # Generate volumes for each organization
-    local orgs=$(yq eval '.network.organizations[].id' $brand_config)
-    for org in $orgs; do
-        echo "  ${org}_peer0:" >> $output_file
+    # Generate volumes for each organization and ALL their peers
+    local org_count=$(yq eval '.network.organizations | length' $brand_config)
+    for ((i=0; i<$org_count; i++)); do
+        local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
+        local peer_count=$(yq eval ".network.organizations[$i].peers | length" $brand_config)
+        
+        # Generate volume for each peer
+        for ((j=0; j<$peer_count; j++)); do
+            local peer_name=$(yq eval ".network.organizations[$i].peers[$j].name" $brand_config)
+            echo "  ${org_id}_${peer_name}:" >> $output_file
+        done
     done
-    echo "  orderer1_data:" >> $output_file
-    echo "  orderer2_data:" >> $output_file
-    echo "  orderer3_data:" >> $output_file
+    
+    # Add orderer volumes
+    local orderer_count=$(yq eval '.network.orderers | length' $brand_config)
+    for ((i=0; i<$orderer_count; i++)); do
+        local orderer_name=$(yq eval ".network.orderers[$i].name" $brand_config)
+        echo "  ${orderer_name}_data:" >> $output_file
+    done
+    
     echo "" >> $output_file
     
     # Networks section
@@ -71,15 +83,14 @@ EOF
 # Function to generate orderer services
 generate_orderer_services() {
     local brand_config=$1
-    local orderers=$(yq eval '.network.orderers' $brand_config)
     
     echo "  # Orderer Services"
     
-    local i=0
-    echo "$orderers" | yq eval '.[] | select(. != null)' | while IFS= read -r orderer; do
-        local name=$(echo "$orderer" | yq eval '.name')
-        local port=$(echo "$orderer" | yq eval '.port')
-        local ops_port=$(echo "$orderer" | yq eval '.operationsPort')
+    local orderer_count=$(yq eval '.network.orderers | length' $brand_config)
+    for ((i=0; i<$orderer_count; i++)); do
+        local name=$(yq eval ".network.orderers[$i].name" $brand_config)
+        local port=$(yq eval ".network.orderers[$i].port" $brand_config)
+        local ops_port=$(yq eval ".network.orderers[$i].operationsPort" $brand_config)
         
         cat << EOF
   $name.orderer.\${BRAND_DOMAIN}:
@@ -100,8 +111,10 @@ generate_orderer_services() {
       - ORDERER_GENERAL_CLUSTER_CLIENTCERTIFICATE=/var/hyperledger/orderer/tls/server.crt
       - ORDERER_GENERAL_CLUSTER_CLIENTPRIVATEKEY=/var/hyperledger/orderer/tls/server.key
       - ORDERER_GENERAL_CLUSTER_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
-      - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
-      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_GENERAL_BOOTSTRAPMETHOD=file
+      - ORDERER_GENERAL_GENESISMETHOD=file
+      - ORDERER_GENERAL_GENESISFILE=/var/hyperledger/orderer/genesis.block
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=false
       - ORDERER_ADMIN_TLS_ENABLED=true
       - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
       - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
@@ -125,7 +138,6 @@ generate_orderer_services() {
       - luxury-network
 
 EOF
-        ((i++))
     done
 }
 
@@ -135,16 +147,18 @@ generate_peer_services() {
     
     echo "  # Peer Services"
     
-    yq eval '.network.organizations[]' $brand_config | while IFS= read -r org; do
-        local org_id=$(echo "$org" | yq eval '.id')
-        local org_name=$(echo "$org" | yq eval '.name')
-        local msp_id=$(echo "$org" | yq eval '.mspId')
+    local org_count=$(yq eval '.network.organizations | length' $brand_config)
+    for ((i=0; i<$org_count; i++)); do
+        local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
+        local org_name=$(yq eval ".network.organizations[$i].name" $brand_config)
+        local msp_id=$(yq eval ".network.organizations[$i].mspId" $brand_config)
         
-        echo "$org" | yq eval '.peers[]' | while IFS= read -r peer; do
-            local peer_name=$(echo "$peer" | yq eval '.name')
-            local peer_port=$(echo "$peer" | yq eval '.port')
-            local chaincode_port=$(echo "$peer" | yq eval '.chaincodePort')
-            local ops_port=$(echo "$peer" | yq eval '.operationsPort')
+        local peer_count=$(yq eval ".network.organizations[$i].peers | length" $brand_config)
+        for ((j=0; j<$peer_count; j++)); do
+            local peer_name=$(yq eval ".network.organizations[$i].peers[$j].name" $brand_config)
+            local peer_port=$(yq eval ".network.organizations[$i].peers[$j].port" $brand_config)
+            local chaincode_port=$(yq eval ".network.organizations[$i].peers[$j].chaincodePort" $brand_config)
+            local ops_port=$(yq eval ".network.organizations[$i].peers[$j].operationsPort" $brand_config)
             
             cat << EOF
   $peer_name.$org_id.\${BRAND_DOMAIN}:
@@ -172,13 +186,17 @@ generate_peer_services() {
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key
       - CORE_PEER_TLS_ROOTCERT_FILE=/etc/hyperledger/fabric/tls/ca.crt
       - CORE_LEDGER_STATE_STATEDATABASE=CouchDB
-      - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb_$peer_name\_$org_id:5984
+      - CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS=couchdb_${peer_name}_${org_id}:5984
       - CORE_LEDGER_STATE_COUCHDBCONFIG_USERNAME=admin
       - CORE_LEDGER_STATE_COUCHDBCONFIG_PASSWORD=adminpw
+
     volumes:
       - /var/run/docker.sock:/host/var/run/docker.sock
       - ../network/organizations/peerOrganizations/$org_id.\${BRAND_DOMAIN}/peers/$peer_name.$org_id.\${BRAND_DOMAIN}/msp:/etc/hyperledger/fabric/msp
       - ../network/organizations/peerOrganizations/$org_id.\${BRAND_DOMAIN}/peers/$peer_name.$org_id.\${BRAND_DOMAIN}/tls:/etc/hyperledger/fabric/tls
+      - ../network/channel-artifacts:/opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts
+      - ../network/organizations/peerOrganizations/$org_id.\${BRAND_DOMAIN}:/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/$org_id.\${BRAND_DOMAIN}
+      - ../network/organizations/ordererOrganizations/orderer.\${BRAND_DOMAIN}:/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/orderer.\${BRAND_DOMAIN}
       - ${org_id}_${peer_name}:/var/hyperledger/production
     working_dir: /opt/gopath/src/github.com/hyperledger/fabric/peer
     command: peer node start
@@ -188,7 +206,7 @@ generate_peer_services() {
     networks:
       - luxury-network
     depends_on:
-      - couchdb_$peer_name\_$org_id
+      - couchdb_${peer_name}_${org_id}
 
 EOF
         done
@@ -202,8 +220,9 @@ generate_ca_services() {
     echo "  # Certificate Authority Services"
     
     local ca_port=7054
-    yq eval '.network.organizations[]' $brand_config | while IFS= read -r org; do
-        local org_id=$(echo "$org" | yq eval '.id')
+    local org_count=$(yq eval '.network.organizations | length' $brand_config)
+    for ((i=0; i<$org_count; i++)); do
+        local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
         
         cat << EOF
   ca_$org_id:
@@ -238,15 +257,17 @@ generate_couchdb_services() {
     echo "  # CouchDB Services"
     
     local couch_port=5984
-    yq eval '.network.organizations[]' $brand_config | while IFS= read -r org; do
-        local org_id=$(echo "$org" | yq eval '.id')
+    local org_count=$(yq eval '.network.organizations | length' $brand_config)
+    for ((i=0; i<$org_count; i++)); do
+        local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
         
-        echo "$org" | yq eval '.peers[]' | while IFS= read -r peer; do
-            local peer_name=$(echo "$peer" | yq eval '.name')
+        local peer_count=$(yq eval ".network.organizations[$i].peers | length" $brand_config)
+        for ((j=0; j<$peer_count; j++)); do
+            local peer_name=$(yq eval ".network.organizations[$i].peers[$j].name" $brand_config)
             
             cat << EOF
-  couchdb_$peer_name\_$org_id:
-    container_name: couchdb_$peer_name\_$org_id
+  couchdb_${peer_name}_${org_id}:
+    container_name: couchdb_${peer_name}_${org_id}
     image: couchdb:3.3.2
     labels:
       service: hyperledger-fabric
@@ -269,11 +290,13 @@ generate_connection_profiles() {
     local brand_config=$1
     local output_dir=$2
     
-    yq eval '.network.organizations[]' $brand_config | while IFS= read -r org; do
-        local org_id=$(echo "$org" | yq eval '.id')
-        local org_name=$(echo "$org" | yq eval '.name')
-        local msp_id=$(echo "$org" | yq eval '.mspId')
+    local org_count=$(yq eval '.network.organizations | length' $brand_config)
+    for ((i=0; i<$org_count; i++)); do
+        local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
+        local org_name=$(yq eval ".network.organizations[$i].name" $brand_config)
+        local msp_id=$(yq eval ".network.organizations[$i].mspId" $brand_config)
         
+        # Start building the connection profile
         cat > $output_dir/connection-$org_id.json << EOF
 {
     "name": "$org_name-network",
@@ -295,20 +318,19 @@ generate_connection_profiles() {
 EOF
         
         # Add peers
-        local peer_count=$(echo "$org" | yq eval '.peers | length')
-        local i=0
-        echo "$org" | yq eval '.peers[]' | while IFS= read -r peer; do
-            local peer_name=$(echo "$peer" | yq eval '.name')
-            echo -n "                \"$peer_name.$org_id.\${BRAND_DOMAIN}\"" >> $output_dir/connection-$org_id.json
-            ((i++))
-            if [ $i -lt $peer_count ]; then
-                echo "," >> $output_dir/connection-$org_id.json
+        local peer_count=$(yq eval ".network.organizations[$i].peers | length" $brand_config)
+        for ((j=0; j<$peer_count; j++)); do
+            local peer_name=$(yq eval ".network.organizations[$i].peers[$j].name" $brand_config)
+            if [ $j -eq 0 ]; then
+                echo -n "                \"$peer_name.$org_id.\${BRAND_DOMAIN}\"" >> $output_dir/connection-$org_id.json
             else
-                echo "" >> $output_dir/connection-$org_id.json
+                echo -n ",
+                \"$peer_name.$org_id.\${BRAND_DOMAIN}\"" >> $output_dir/connection-$org_id.json
             fi
         done
         
         cat >> $output_dir/connection-$org_id.json << EOF
+
             ],
             "certificateAuthorities": [
                 "ca.$org_id.\${BRAND_DOMAIN}"
@@ -319,27 +341,75 @@ EOF
 EOF
         
         # Add peer details
-        echo "$org" | yq eval '.peers[]' | while IFS= read -r peer; do
-            local peer_name=$(echo "$peer" | yq eval '.name')
-            local peer_port=$(echo "$peer" | yq eval '.port')
+        for ((j=0; j<$peer_count; j++)); do
+            local peer_name=$(yq eval ".network.organizations[$i].peers[$j].name" $brand_config)
+            local peer_port=$(yq eval ".network.organizations[$i].peers[$j].port" $brand_config)
+            
+            if [ $j -gt 0 ]; then
+                echo "," >> $output_dir/connection-$org_id.json
+            fi
             
             cat >> $output_dir/connection-$org_id.json << EOF
         "$peer_name.$org_id.\${BRAND_DOMAIN}": {
             "url": "grpcs://localhost:$peer_port",
             "tlsCACerts": {
-                "pem": "-----BEGIN CERTIFICATE-----\\n...\\n-----END CERTIFICATE-----\\n"
+                "pem": "-----BEGIN CERTIFICATE-----\nMIICNDCCAdqgAwIBAgIRAIBOtq8vZiC0+uLSi2MIS4swCgYIKoZIzj0EAwIwZjEL\n...\n-----END CERTIFICATE-----\n"
             },
             "grpcOptions": {
                 "ssl-target-name-override": "$peer_name.$org_id.\${BRAND_DOMAIN}",
                 "hostnameOverride": "$peer_name.$org_id.\${BRAND_DOMAIN}"
             }
-        },
+        }
 EOF
         done
         
         # Close the JSON structure
-        echo "    }" >> $output_dir/connection-$org_id.json
-        echo "}" >> $output_dir/connection-$org_id.json
+        cat >> $output_dir/connection-$org_id.json << EOF
+
+    }
+}
+EOF
+    done
+}
+
+# Function to update connection profiles with actual certificates after crypto generation
+update_connection_profiles() {
+    local config_dir=$1
+    local crypto_base_dir=$2
+    
+    # Find all connection profiles
+    for profile in $config_dir/connection-*.json; do
+        if [ -f "$profile" ]; then
+            # Extract org id from filename
+            local filename=$(basename "$profile")
+            local org_id=${filename#connection-}
+            org_id=${org_id%.json}
+            
+            # Find the TLS CA certificate
+            local tlsca_cert_path="$crypto_base_dir/peerOrganizations/$org_id.${BRAND_DOMAIN}/tlsca/tlsca.$org_id.${BRAND_DOMAIN}-cert.pem"
+            
+            if [ -f "$tlsca_cert_path" ]; then
+                # Read the certificate and format it for JSON
+                local tlsca_cert=$(cat "$tlsca_cert_path" | awk 'NF {sub(/\r/, ""); printf "%s\\n",$0;}')
+                
+                # Create a temporary file with the updated certificate
+                local temp_file="${profile}.tmp"
+                
+                # Use jq to update the certificate in the JSON
+                jq --arg cert "$tlsca_cert" '
+                    .peers |= with_entries(
+                        .value.tlsCACerts.pem = $cert
+                    )
+                ' "$profile" > "$temp_file"
+                
+                # Replace the original file
+                mv "$temp_file" "$profile"
+                
+                echo "Updated connection profile for $org_id with TLS certificate"
+            else
+                echo "Warning: TLS CA certificate not found for $org_id"
+            fi
+        fi
     done
 }
 
@@ -348,10 +418,11 @@ generate_network_topology() {
     local brand_config=$1
     
     echo "### Organizations"
-    yq eval '.network.organizations[]' $brand_config | while IFS= read -r org; do
-        local org_name=$(echo "$org" | yq eval '.name')
-        local org_type=$(echo "$org" | yq eval '.type')
-        local peer_count=$(echo "$org" | yq eval '.peers | length')
+    local org_count=$(yq eval '.network.organizations | length' $brand_config)
+    for ((i=0; i<$org_count; i++)); do
+        local org_name=$(yq eval ".network.organizations[$i].name" $brand_config)
+        local org_type=$(yq eval ".network.organizations[$i].type" $brand_config)
+        local peer_count=$(yq eval ".network.organizations[$i].peers | length" $brand_config)
         echo "- **$org_name** ($org_type): $peer_count peer(s)"
     done
     
@@ -362,9 +433,9 @@ generate_network_topology() {
     
     echo ""
     echo "### Channels"
-    yq eval '.network.channels[]' $brand_config | while IFS= read -r channel; do
-        local channel_name=$(echo "$channel" | yq eval '.name')
+    local channel_count=$(yq eval '.network.channels | length' $brand_config)
+    for ((i=0; i<$channel_count; i++)); do
+        local channel_name=$(yq eval ".network.channels[$i].name" $brand_config)
         echo "- **$channel_name**: Primary supply chain channel"
     done
-}</document_content>
-</invoke>
+}

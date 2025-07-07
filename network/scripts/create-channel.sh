@@ -14,6 +14,9 @@ NC='\033[0m'
 # Load environment variables
 source .env
 
+BRAND_NAME_LOWER=$(echo ${BRAND_NAME} | tr '[:upper:]' '[:lower:]')
+
+
 CHANNEL_NAME="luxury-supply-chain"
 DELAY=3
 MAX_RETRY=5
@@ -40,12 +43,13 @@ verifyNetwork() {
 createChannel() {
     echo -e "${YELLOW}Creating channel $CHANNEL_NAME...${NC}"
     
+        
     # Set environment for brand peer0
     export CORE_PEER_TLS_ENABLED=true
     export CORE_PEER_LOCALMSPID="${BRAND_NAME}MSP"
-    export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${BRAND_NAME}.${BRAND_DOMAIN}/peers/peer0.${BRAND_NAME}.${BRAND_DOMAIN}/tls/ca.crt
-    export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${BRAND_NAME}.${BRAND_DOMAIN}/users/Admin@${BRAND_NAME}.${BRAND_DOMAIN}/msp
-    export CORE_PEER_ADDRESS=peer0.${BRAND_NAME}.${BRAND_DOMAIN}:7051
+    export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/organizations/peerOrganizations/${BRAND_NAME_LOWER}.${BRAND_DOMAIN}/peers/peer0.${BRAND_NAME_LOWER}.${BRAND_DOMAIN}/tls/ca.crt
+    export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${BRAND_NAME_LOWER}.${BRAND_DOMAIN}/users/Admin@${BRAND_NAME_LOWER}.${BRAND_DOMAIN}/msp
+    export CORE_PEER_ADDRESS=peer0.${BRAND_NAME_LOWER}.${BRAND_DOMAIN}:7051
     
     local ORDERER_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/msp/tlscacerts/tlsca.orderer.${BRAND_DOMAIN}-cert.pem
     
@@ -56,7 +60,7 @@ createChannel() {
         -e CORE_PEER_TLS_ROOTCERT_FILE=$CORE_PEER_TLS_ROOTCERT_FILE \
         -e CORE_PEER_MSPCONFIGPATH=$CORE_PEER_MSPCONFIGPATH \
         -e CORE_PEER_ADDRESS=$CORE_PEER_ADDRESS \
-        peer0.${BRAND_NAME}.${BRAND_DOMAIN} \
+        peer0.${BRAND_NAME_LOWER}.${BRAND_DOMAIN} \
         peer channel create \
             -o orderer1.orderer.${BRAND_DOMAIN}:7050 \
             -c $CHANNEL_NAME \
@@ -79,20 +83,23 @@ joinChannel() {
     local PEER=$2
     local PORT=$3
     
+    local ORG_LOWER=$(echo ${ORG} | tr '[:upper:]' '[:lower:]')
+    
+    echo -e "${YELLOW}Joining $PEER.$ORG to channel...${NC}"
     echo -e "${YELLOW}Joining $PEER.$ORG to channel...${NC}"
     
     # Set peer environment
     if [ "$ORG" == "${BRAND_NAME}" ]; then
         export CORE_PEER_LOCALMSPID="${BRAND_NAME}MSP"
-        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/peers/${PEER}.${ORG}.${BRAND_DOMAIN}/tls/ca.crt
-        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/users/Admin@${ORG}.${BRAND_DOMAIN}/msp
+        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/peers/${PEER}.${ORG_LOWER}.${BRAND_DOMAIN}/tls/ca.crt
+        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/users/Admin@${ORG_LOWER}.${BRAND_DOMAIN}/msp
     else
         export CORE_PEER_LOCALMSPID="${ORG}MSP"
-        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/peers/${PEER}.${ORG}.${BRAND_DOMAIN}/tls/ca.crt
-        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/users/Admin@${ORG}.${BRAND_DOMAIN}/msp
+        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/peers/${PEER}.${ORG_LOWER}.${BRAND_DOMAIN}/tls/ca.crt
+        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/users/Admin@${ORG_LOWER}.${BRAND_DOMAIN}/msp
     fi
     
-    export CORE_PEER_ADDRESS=${PEER}.${ORG}.${BRAND_DOMAIN}:${PORT}
+    export CORE_PEER_ADDRESS=${PEER}.${ORG_LOWER}.${BRAND_DOMAIN}:${PORT}
     
     # Join channel
     docker exec \
@@ -101,7 +108,7 @@ joinChannel() {
         -e CORE_PEER_TLS_ROOTCERT_FILE=$CORE_PEER_TLS_ROOTCERT_FILE \
         -e CORE_PEER_MSPCONFIGPATH=$CORE_PEER_MSPCONFIGPATH \
         -e CORE_PEER_ADDRESS=$CORE_PEER_ADDRESS \
-        ${PEER}.${ORG}.${BRAND_DOMAIN} \
+        ${PEER}.${ORG_LOWER}.${BRAND_DOMAIN} \
         peer channel join -b ./channel-artifacts/${CHANNEL_NAME}.block
     
     if [ $? -eq 0 ]; then
@@ -115,21 +122,22 @@ joinChannel() {
 # Function to update anchor peers
 updateAnchorPeers() {
     local ORG=$1
+    local ORG_LOWER=$(echo ${ORG} | tr '[:upper:]' '[:lower:]')
     
     echo -e "${YELLOW}Updating anchor peer for $ORG...${NC}"
     
     # Set peer environment
     if [ "$ORG" == "${BRAND_NAME}" ]; then
         export CORE_PEER_LOCALMSPID="${BRAND_NAME}MSP"
-        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/peers/peer0.${ORG}.${BRAND_DOMAIN}/tls/ca.crt
-        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/users/Admin@${ORG}.${BRAND_DOMAIN}/msp
+        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/peers/peer0.${ORG_LOWER}.${BRAND_DOMAIN}/tls/ca.crt
+        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/users/Admin@${ORG_LOWER}.${BRAND_DOMAIN}/msp
     else
         export CORE_PEER_LOCALMSPID="${ORG}MSP"
-        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/peers/peer0.${ORG}.${BRAND_DOMAIN}/tls/ca.crt
-        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/users/Admin@${ORG}.${BRAND_DOMAIN}/msp
+        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/peers/peer0.${ORG_LOWER}.${BRAND_DOMAIN}/tls/ca.crt
+        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG_LOWER}.${BRAND_DOMAIN}/users/Admin@${ORG_LOWER}.${BRAND_DOMAIN}/msp
     fi
     
-    export CORE_PEER_ADDRESS=peer0.${ORG}.${BRAND_DOMAIN}:7051
+    export CORE_PEER_ADDRESS=peer0.${ORG_LOWER}.${BRAND_DOMAIN}:7051
     
     local ORDERER_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/msp/tlscacerts/tlsca.orderer.${BRAND_DOMAIN}-cert.pem
     
@@ -140,7 +148,7 @@ updateAnchorPeers() {
         -e CORE_PEER_TLS_ROOTCERT_FILE=$CORE_PEER_TLS_ROOTCERT_FILE \
         -e CORE_PEER_MSPCONFIGPATH=$CORE_PEER_MSPCONFIGPATH \
         -e CORE_PEER_ADDRESS=$CORE_PEER_ADDRESS \
-        peer0.${ORG}.${BRAND_DOMAIN} \
+        peer0.${ORG_LOWER}.${BRAND_DOMAIN} \
         peer channel update \
             -o orderer1.orderer.${BRAND_DOMAIN}:7050 \
             -c $CHANNEL_NAME \
@@ -160,7 +168,7 @@ verifyChannel() {
     echo -e "${YELLOW}Verifying channel creation...${NC}"
     
     # List channels on peer0
-    docker exec peer0.${BRAND_NAME}.${BRAND_DOMAIN} peer channel list
+    docker exec peer0.${BRAND_NAME_LOWER}.${BRAND_DOMAIN} peer channel list
     
     echo -e "${GREEN}Channel verification complete${NC}"
 }

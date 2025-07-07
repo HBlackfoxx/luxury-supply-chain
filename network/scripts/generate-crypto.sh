@@ -43,21 +43,46 @@ generateCryptoMaterials() {
     echo -e "${GREEN}Crypto materials generated successfully${NC}"
 }
 
+# Function to fix configtx paths
+fixConfigtxPaths() {
+    echo -e "${YELLOW}Fixing paths in configtx.yaml...${NC}"
+    
+    # Create a temporary configtx.yaml with corrected paths
+    cp config/configtx.yaml config/configtx_temp.yaml
+    
+    # Get the absolute path to the organizations directory
+    ORG_PATH="$PWD/network/organizations"
+    
+    # Replace relative paths with absolute paths in the temp file
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        sed -i '' "s|../organizations|${ORG_PATH}|g" config/configtx_temp.yaml
+    else
+        # Linux
+        sed -i "s|../organizations|${ORG_PATH}|g" config/configtx_temp.yaml
+    fi
+    
+    echo -e "${GREEN}Paths fixed in configtx.yaml${NC}"
+}
+
 # Function to generate genesis block
 generateGenesisBlock() {
     echo -e "${YELLOW}Generating genesis block...${NC}"
     
     # Check if configtxgen exists
     if ! command -v configtxgen &> /dev/null; then
-        echo -e "${RED}configtxgen tool not found. Please install Fabric binaries.${NC}"
-        exit 1
+        echo -e "${RED}configtxgen tool not found. Installing...${NC}"
+        if [ ! -d "bin" ]; then
+            curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.0 1.5.5 -d -s
+        fi
+        export PATH=$PWD/bin:$PATH
     fi
     
     # Set config path
-    export FABRIC_CFG_PATH=$PWD/config
+    export FABRIC_CFG_PATH="$PWD/config"
     
-    # Generate genesis block
-    configtxgen -profile LuxuryOrdererGenesis -channelID system-channel -outputBlock network/system-genesis-block/genesis.block
+    # Generate genesis block with quoted path to handle spaces
+    configtxgen -profile LuxuryOrdererGenesis -channelID system-channel -outputBlock "$PWD/network/system-genesis-block/genesis.block"
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to generate genesis block${NC}"
@@ -73,8 +98,11 @@ generateChannelTx() {
     
     export FABRIC_CFG_PATH=$PWD/config
     
+    # Get channel name from environment or use default
+    CHANNEL_NAME=${CHANNEL_NAME:-"luxury-supply-chain"}
+    
     # Generate channel configuration transaction
-    configtxgen -profile LuxurySupplyChain -outputCreateChannelTx network/channel-artifacts/luxury-supply-chain.tx -channelID luxury-supply-chain
+    configtxgen -profile LuxurySupplyChain -outputCreateChannelTx network/channel-artifacts/${CHANNEL_NAME}.tx -channelID ${CHANNEL_NAME}
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to generate channel transaction${NC}"
@@ -90,36 +118,75 @@ generateAnchorPeerTx() {
     
     export FABRIC_CFG_PATH=$PWD/config
     
-    # Read organizations from config
-    ORGS=($(yq eval '.network.organizations[].mspId' ../config/brands/example-brand/network-config.yaml))
+    # Get channel name
+    CHANNEL_NAME=${CHANNEL_NAME:-"luxury-supply-chain"}
+    
+    # Extract organization MSP IDs from the config
+    # Look for lines like "Name: LuxeBagsMSP" under Organizations
+    ORGS=()
+    while IFS= read -r line; do
+        if [[ $line =~ ^[[:space:]]*Name:[[:space:]]*(.+MSP)$ ]]; then
+            msp="${BASH_REMATCH[1]}"
+            # Skip OrdererMSP
+            if [[ "$msp" != *"OrdererMSP"* ]]; then
+                ORGS+=("$msp")
+            fi
+        fi
+    done < config/configtx.yaml
+    
+    # Remove duplicates
+    ORGS=($(echo "${ORGS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
+    
+    echo "Found organizations: ${ORGS[@]}"
     
     for org in "${ORGS[@]}"; do
         echo "Generating anchor peer transaction for $org"
-        configtxgen -profile LuxurySupplyChain -outputAnchorPeersUpdate network/channel-artifacts/${org}anchors.tx -channelID luxury-supply-chain -asOrg $org
+        configtxgen -profile LuxurySupplyChain -outputAnchorPeersUpdate network/channel-artifacts/${org}anchors.tx -channelID ${CHANNEL_NAME} -asOrg $org
         
         if [ $? -ne 0 ]; then
-            echo -e "${RED}Failed to generate anchor peer transaction for $org${NC}"
-            exit 1
+            echo -e "${YELLOW}Warning: Could not generate anchor peer transaction for $org${NC}"
         fi
     done
     
-    echo -e "${GREEN}Anchor peer transactions generated successfully${NC}"
+    echo -e "${GREEN}Anchor peer transactions generated${NC}"
 }
 
 # Function to create Fabric CA server configs
 generateCAConfigs() {
     echo -e "${YELLOW}Generating CA server configurations...${NC}"
     
-    # Read organizations from config
-    local brand_config="../config/brands/example-brand/network-config.yaml"
+    # Find the brand config file
+    local brand_config=""
+    for config_file in ../config/brands/*/network-config.yaml; do
+        if [ -f "$config_file" ]; then
+            brand_config="$config_file"
+            break
+        fi
+    done
     
-    yq eval '.network.organizations[]' $brand_config | while IFS= read -r org; do
-        local org_id=$(echo "$org" | yq eval '.id')
-        local org_name=$(echo "$org" | yq eval '.name')
-        
-        mkdir -p network/organizations/fabric-ca/$org_id
-        
-        cat > network/organizations/fabric-ca/$org_id/fabric-ca-server-config.yaml << EOF
+    if [ -z "$brand_config" ]; then
+        echo -e "${YELLOW}No brand configuration found, using defaults${NC}"
+        # Create default CA config for the brand
+        mkdir -p network/organizations/fabric-ca/${BRAND_ID}
+        createDefaultCAConfig ${BRAND_ID}
+    else
+        # Use yq with proper indexing
+        local org_count=$(yq eval '.network.organizations | length' $brand_config)
+        for ((i=0; i<$org_count; i++)); do
+            local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
+            mkdir -p network/organizations/fabric-ca/$org_id
+            createDefaultCAConfig $org_id
+        done
+    fi
+    
+    echo -e "${GREEN}CA configurations generated successfully${NC}"
+}
+
+# Function to create default CA config
+createDefaultCAConfig() {
+    local org_id=$1
+    
+    cat > network/organizations/fabric-ca/$org_id/fabric-ca-server-config.yaml << EOF
 version: 1.5.5
 port: 7054
 debug: false
@@ -215,9 +282,40 @@ bccsp:
     filekeystore:
       keystore: msp/keystore
 EOF
-    done
+}
+
+# Function to update connection profiles with actual certificates
+updateConnectionProfiles() {
+    echo -e "${YELLOW}Updating connection profiles with TLS certificates...${NC}"
     
-    echo -e "${GREEN}CA configurations generated successfully${NC}"
+    # Source the utils script to get the update function
+    source scripts/utils.sh
+    
+    # Update the profiles
+    update_connection_profiles "config" "network/organizations"
+    
+    echo -e "${GREEN}Connection profiles updated successfully${NC}"
+}
+
+# Function to verify crypto materials
+verifyCryptoMaterials() {
+    echo -e "${YELLOW}Verifying crypto materials...${NC}"
+    
+    # Check if orderer TLS certs exist
+    if [ ! -f "network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt" ]; then
+        echo -e "${RED}Orderer TLS certificates not found!${NC}"
+        echo "Expected path: network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt"
+        return 1
+    fi
+    
+    # Check if peer organizations exist
+    if [ ! -d "network/organizations/peerOrganizations" ]; then
+        echo -e "${RED}Peer organizations not found!${NC}"
+        return 1
+    fi
+    
+    echo -e "${GREEN}Crypto materials verified${NC}"
+    return 0
 }
 
 # Main execution
@@ -234,12 +332,33 @@ main() {
     mkdir -p network/system-genesis-block
     mkdir -p network/channel-artifacts
     
-    # Generate all crypto materials
+    # Step 1: Generate crypto materials FIRST
     generateCryptoMaterials
+    
+    # Step 2: Verify crypto materials exist
+    verifyCryptoMaterials
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Crypto materials verification failed${NC}"
+        exit 1
+    fi
+    
+    # Step 3: Generate CA configs
     generateCAConfigs
+    
+    # Step 4: Fix paths in configtx.yaml for genesis block generation
+    #fixConfigtxPaths
+    
+    # Step 5: Generate genesis block (now crypto materials exist)
     generateGenesisBlock
+    
+    # Step 6: Generate channel configuration
     generateChannelTx
+    
+    # Step 7: Generate anchor peer updates
     generateAnchorPeerTx
+    
+    # Step 8: Update connection profiles with actual certificates
+    updateConnectionProfiles
     
     echo ""
     echo -e "${GREEN}All crypto materials generated successfully!${NC}"

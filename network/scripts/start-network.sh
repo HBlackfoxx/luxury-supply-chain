@@ -43,13 +43,20 @@ checkCryptoMaterials() {
 # Function to start Docker containers
 startContainers() {
     echo -e "${YELLOW}Starting Docker containers...${NC}"
-    
+    set -a
+    source .env
+    set +a
+
     # Export required environment variables
     export IMAGE_TAG=latest
     export COMPOSE_PROJECT_NAME=${BRAND_ID}_${NETWORK_NAME}
     
+    echo "Debug: BRAND_DOMAIN = '$BRAND_DOMAIN'"
+
+    envsubst < docker/docker-compose.yaml > docker/docker-compose-processed.yaml
+
     # Start containers
-    docker-compose -f docker/docker-compose.yaml up -d
+    docker-compose -f docker/docker-compose-processed.yaml up -d
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to start Docker containers${NC}"
@@ -77,24 +84,31 @@ waitForContainers() {
     
     echo -e "${GREEN}Orderer is ready${NC}"
     
-    # Wait for peers
-    echo "Waiting for peers..."
+    # Get actual container names from docker
+    echo "Waiting for peers and databases..."
     
-    # Get list of peer containers
-    PEER_CONTAINERS=$(docker ps --format "table {{.Names}}" | grep peer | grep -v NAMES)
+    # List all containers for this project
+    CONTAINERS=$(docker ps --filter "label=service=hyperledger-fabric" --format "{{.Names}}")
     
-    for container in $PEER_CONTAINERS; do
-        echo "Checking $container..."
-        docker exec $container peer version > /dev/null 2>&1
-        while [ $? -ne 0 ]; do
-            echo "$container not ready yet..."
-            sleep 2
-            docker exec $container peer version > /dev/null 2>&1
-        done
-        echo "$container is ready"
+    for container in $CONTAINERS; do
+        if [[ $container == peer* ]]; then
+            echo "Checking peer: $container..."
+            until docker exec $container peer version > /dev/null 2>&1; do
+                echo "$container not ready yet..."
+                sleep 2
+            done
+            echo "✓ $container is ready"
+        elif [[ $container == couchdb* ]]; then
+            echo "Checking database: $container..."
+            until docker exec $container curl -s http://localhost:5984/ > /dev/null 2>&1; do
+                echo "$container not ready yet..."
+                sleep 2
+            done
+            echo "✓ $container is ready"
+        fi
     done
     
-    echo -e "${GREEN}All peers are ready${NC}"
+    echo -e "${GREEN}All containers are ready${NC}"
 }
 
 # Function to display network status

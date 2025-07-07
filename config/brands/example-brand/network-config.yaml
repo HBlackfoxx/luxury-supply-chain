@@ -3,7 +3,7 @@
 
 brand:
   id: "luxe-bags"
-  name: "LuxeBags"
+  name: "luxebags"
   description: "Premium luxury handbag manufacturer"
   
 network:
@@ -121,14 +121,14 @@ products:
 
 integrations:
   erp:
-    enabled: true
+    enabled: false
     type: "simulated"
     endpoints:
       inventory: "/api/v1/inventory"
       orders: "/api/v1/orders"
       products: "/api/v1/products"
   ai:
-    enabled: true
+    enabled: false
     service: "internal"
     endpoints:
       analyze: "/api/v1/analyze"

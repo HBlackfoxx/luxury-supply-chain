@@ -2,7 +2,6 @@
 // Manages blockchain transactions with retry logic and error handling
 
 import { Contract, Network, Gateway, ProposalOptions, TransientMap } from '@hyperledger/fabric-gateway';
-import { TextDecoder } from 'util';
 
 export interface TransactionOptions {
   transientData?: TransientMap;
