@@ -1,5 +1,5 @@
-# Channel configuration template
-# Defines policies, capabilities, and consortium
+# Channel configuration for Luxe Bags luxury supply chain
+# Using V2_0 capabilities for compatibility
 
 Organizations:
   - &OrdererOrg
@@ -21,101 +21,102 @@ Organizations:
       - orderer2.orderer.${BRAND_DOMAIN}:8050
       - orderer3.orderer.${BRAND_DOMAIN}:9050
 
-  - &Brand
-    Name: ${BRAND_NAME}MSP
-    ID: ${BRAND_NAME}MSP
-    MSPDir: ../network/organizations/peerOrganizations/${BRAND_NAME}.${BRAND_DOMAIN}/msp
+  - &LuxeBags
+    Name: LuxeBagsMSP
+    ID: LuxeBagsMSP
+    MSPDir: ../network/organizations/peerOrganizations/luxebags.${BRAND_DOMAIN}/msp
     Policies:
       Readers:
         Type: Signature
-        Rule: "OR('${BRAND_NAME}MSP.admin', '${BRAND_NAME}MSP.peer', '${BRAND_NAME}MSP.client')"
+        Rule: "OR('LuxeBagsMSP.admin', 'LuxeBagsMSP.peer', 'LuxeBagsMSP.client')"
       Writers:
         Type: Signature
-        Rule: "OR('${BRAND_NAME}MSP.admin', '${BRAND_NAME}MSP.client')"
+        Rule: "OR('LuxeBagsMSP.admin', 'LuxeBagsMSP.client')"
       Admins:
         Type: Signature
-        Rule: "OR('${BRAND_NAME}MSP.admin')"
+        Rule: "OR('LuxeBagsMSP.admin')"
       Endorsement:
         Type: Signature
-        Rule: "OR('${BRAND_NAME}MSP.peer')"
+        Rule: "OR('LuxeBagsMSP.peer')"
     AnchorPeers:
-      - Host: peer0.${BRAND_NAME}.${BRAND_DOMAIN}
+      - Host: peer0.luxebags.${BRAND_DOMAIN}
         Port: 7051
 
-  - &Supplier1
-    Name: Supplier1MSP
-    ID: Supplier1MSP
-    MSPDir: ../network/organizations/peerOrganizations/supplier1.${BRAND_DOMAIN}/msp
+  - &ItalianLeather
+    Name: ItalianLeatherMSP
+    ID: ItalianLeatherMSP
+    MSPDir: ../network/organizations/peerOrganizations/italianleather.${BRAND_DOMAIN}/msp
     Policies:
       Readers:
         Type: Signature
-        Rule: "OR('Supplier1MSP.admin', 'Supplier1MSP.peer', 'Supplier1MSP.client')"
+        Rule: "OR('ItalianLeatherMSP.admin', 'ItalianLeatherMSP.peer', 'ItalianLeatherMSP.client')"
       Writers:
         Type: Signature
-        Rule: "OR('Supplier1MSP.admin', 'Supplier1MSP.client')"
+        Rule: "OR('ItalianLeatherMSP.admin', 'ItalianLeatherMSP.client')"
       Admins:
         Type: Signature
-        Rule: "OR('Supplier1MSP.admin')"
+        Rule: "OR('ItalianLeatherMSP.admin')"
       Endorsement:
         Type: Signature
-        Rule: "OR('Supplier1MSP.peer')"
+        Rule: "OR('ItalianLeatherMSP.peer')"
     AnchorPeers:
-      - Host: peer0.supplier1.${BRAND_DOMAIN}
+      - Host: peer0.italianleather.${BRAND_DOMAIN}
         Port: 9051
 
-  - &Manufacturer1
-    Name: Manufacturer1MSP
-    ID: Manufacturer1MSP
-    MSPDir: ../network/organizations/peerOrganizations/manufacturer1.${BRAND_DOMAIN}/msp
+  - &CraftWorkshop
+    Name: CraftWorkshopMSP
+    ID: CraftWorkshopMSP
+    MSPDir: ../network/organizations/peerOrganizations/craftworkshop.${BRAND_DOMAIN}/msp
     Policies:
       Readers:
         Type: Signature
-        Rule: "OR('Manufacturer1MSP.admin', 'Manufacturer1MSP.peer', 'Manufacturer1MSP.client')"
+        Rule: "OR('CraftWorkshopMSP.admin', 'CraftWorkshopMSP.peer', 'CraftWorkshopMSP.client')"
       Writers:
         Type: Signature
-        Rule: "OR('Manufacturer1MSP.admin', 'Manufacturer1MSP.client')"
+        Rule: "OR('CraftWorkshopMSP.admin', 'CraftWorkshopMSP.client')"
       Admins:
         Type: Signature
-        Rule: "OR('Manufacturer1MSP.admin')"
+        Rule: "OR('CraftWorkshopMSP.admin')"
       Endorsement:
         Type: Signature
-        Rule: "OR('Manufacturer1MSP.peer')"
+        Rule: "OR('CraftWorkshopMSP.peer')"
     AnchorPeers:
-      - Host: peer0.manufacturer1.${BRAND_DOMAIN}
+      - Host: peer0.craftworkshop.${BRAND_DOMAIN}
         Port: 10051
 
-  - &Retailer1
-    Name: Retailer1MSP
-    ID: Retailer1MSP
-    MSPDir: ../network/organizations/peerOrganizations/retailer1.${BRAND_DOMAIN}/msp
+  - &LuxuryRetail
+    Name: LuxuryRetailMSP
+    ID: LuxuryRetailMSP
+    MSPDir: ../network/organizations/peerOrganizations/luxuryretail.${BRAND_DOMAIN}/msp
     Policies:
       Readers:
         Type: Signature
-        Rule: "OR('Retailer1MSP.admin', 'Retailer1MSP.peer', 'Retailer1MSP.client')"
+        Rule: "OR('LuxuryRetailMSP.admin', 'LuxuryRetailMSP.peer', 'LuxuryRetailMSP.client')"
       Writers:
         Type: Signature
-        Rule: "OR('Retailer1MSP.admin', 'Retailer1MSP.client')"
+        Rule: "OR('LuxuryRetailMSP.admin', 'LuxuryRetailMSP.client')"
       Admins:
         Type: Signature
-        Rule: "OR('Retailer1MSP.admin')"
+        Rule: "OR('LuxuryRetailMSP.admin')"
       Endorsement:
         Type: Signature
-        Rule: "OR('Retailer1MSP.peer')"
+        Rule: "OR('LuxuryRetailMSP.peer')"
     AnchorPeers:
-      - Host: peer0.retailer1.${BRAND_DOMAIN}
+      - Host: peer0.luxuryretail.${BRAND_DOMAIN}
         Port: 11051
 
-# Rest of the file remains the same...
+# Capabilities - Using V2_0 for compatibility
 Capabilities:
   Channel: &ChannelCapabilities
-    V2_5: true
+    V2_0: true
 
   Orderer: &OrdererCapabilities
     V2_0: true
 
   Application: &ApplicationCapabilities
-    V2_5: true
+    V2_0: true
 
+# Application defaults
 Application: &ApplicationDefaults
   Organizations:
   Policies:
@@ -137,6 +138,7 @@ Application: &ApplicationDefaults
   Capabilities:
     <<: *ApplicationCapabilities
 
+# Orderer defaults
 Orderer: &OrdererDefaults
   OrdererType: etcdraft
   Addresses:
@@ -177,6 +179,7 @@ Orderer: &OrdererDefaults
       Type: ImplicitMeta
       Rule: "ANY Writers"
 
+# Channel defaults
 Channel: &ChannelDefaults
   Policies:
     Readers:
@@ -191,6 +194,7 @@ Channel: &ChannelDefaults
   Capabilities:
     <<: *ChannelCapabilities
 
+# Profiles
 Profiles:
   LuxuryOrdererGenesis:
     <<: *ChannelDefaults
@@ -202,17 +206,17 @@ Profiles:
     Application:
       <<: *ApplicationDefaults
       Organizations:
-        - *Brand
-        - *Supplier1
-        - *Manufacturer1
-        - *Retailer1
+        - *LuxeBags
+        - *ItalianLeather
+        - *CraftWorkshop
+        - *LuxuryRetail
     Consortiums:
       LuxuryConsortium:
         Organizations:
-          - *Brand
-          - *Supplier1
-          - *Manufacturer1
-          - *Retailer1
+          - *LuxeBags
+          - *ItalianLeather
+          - *CraftWorkshop
+          - *LuxuryRetail
 
   LuxurySupplyChain:
     Consortium: LuxuryConsortium
@@ -220,8 +224,8 @@ Profiles:
     Application:
       <<: *ApplicationDefaults
       Organizations:
-        - *Brand
-        - *Supplier1
-        - *Manufacturer1
-        - *Retailer1
+        - *LuxeBags
+        - *ItalianLeather
+        - *CraftWorkshop
+        - *LuxuryRetail
       Capabilities: *ApplicationCapabilities

@@ -24,7 +24,7 @@ generateCryptoMaterials() {
     # Check if cryptogen exists
     if ! command -v cryptogen &> /dev/null; then
         echo -e "${RED}cryptogen tool not found. Installing...${NC}"
-        curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.0 1.5.5 -d -s
+        curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.12 1.5.12 -d -s
         export PATH=$PWD/bin:$PATH
     fi
     
@@ -73,7 +73,7 @@ generateGenesisBlock() {
     if ! command -v configtxgen &> /dev/null; then
         echo -e "${RED}configtxgen tool not found. Installing...${NC}"
         if [ ! -d "bin" ]; then
-            curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.0 1.5.5 -d -s
+            curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.12 1.5.12 -d -s
         fi
         export PATH=$PWD/bin:$PATH
     fi
@@ -151,55 +151,76 @@ generateAnchorPeerTx() {
     echo -e "${GREEN}Anchor peer transactions generated${NC}"
 }
 
-# Function to create Fabric CA server configs
-generateCAConfigs() {
-    echo -e "${YELLOW}Generating CA server configurations...${NC}"
+
+# Function to initialize Fabric CA
+initializeFabricCA() {
+    echo -e "${YELLOW}Initializing Fabric CA servers...${NC}"
     
-    # Find the brand config file
-    local brand_config=""
-    for config_file in ../config/brands/*/network-config.yaml; do
-        if [ -f "$config_file" ]; then
-            brand_config="$config_file"
-            break
+    # Function to init individual CA
+    init_ca() {
+        local org=$1
+        local ca_path="network/organizations/fabric-ca/$org"
+        
+        echo "Initializing CA for $org..."
+        
+        # Create directory
+        mkdir -p $ca_path
+        
+        # Skip if already initialized
+        if [ -f "$ca_path/ca-cert.pem" ] && [ -f "$ca_path/ca-key.pem" ]; then
+            echo "CA already initialized for $org, skipping..."
+            return
         fi
-    done
+        
+        # Remove any existing files
+        rm -rf $ca_path/*
+        
+        # Initialize CA using docker
+        docker run --rm \
+            -v "$(pwd)/$ca_path":/etc/hyperledger/fabric-ca-server \
+            -e FABRIC_CA_HOME=/etc/hyperledger/fabric-ca-server \
+            -e FABRIC_CA_SERVER_CA_NAME=ca-$org \
+            hyperledger/fabric-ca:${CA_VERSION:-1.5.12} \
+            fabric-ca-server init -b admin:adminpw
+        
+        # Fix permissions if needed
+        if [ "$EUID" -ne 0 ]; then
+            chmod -R 755 $ca_path 2>/dev/null || true
+        fi
+        
+        # Create fabric-ca-server-config.yaml if it doesn't exist
+        if [ ! -f "$ca_path/fabric-ca-server-config.yaml" ]; then
+            createCAConfig $org
+        fi
+    }
     
-    if [ -z "$brand_config" ]; then
-        echo -e "${YELLOW}No brand configuration found, using defaults${NC}"
-        # Create default CA config for the brand
-        mkdir -p network/organizations/fabric-ca/${BRAND_ID}
-        createDefaultCAConfig ${BRAND_ID}
-    else
-        # Use yq with proper indexing
-        local org_count=$(yq eval '.network.organizations | length' $brand_config)
-        for ((i=0; i<$org_count; i++)); do
-            local org_id=$(yq eval ".network.organizations[$i].id" $brand_config)
-            mkdir -p network/organizations/fabric-ca/$org_id
-            createDefaultCAConfig $org_id
-        done
-    fi
+    # Initialize CAs for all organizations
+    init_ca "luxebags"
+    init_ca "italianleather"
+    init_ca "craftworkshop"
+    init_ca "luxuryretail"
     
-    echo -e "${GREEN}CA configurations generated successfully${NC}"
+    echo -e "${GREEN}All CA servers initialized${NC}"
 }
 
-# Function to create default CA config
-createDefaultCAConfig() {
-    local org_id=$1
+# Function to create CA config
+createCAConfig() {
+    local org=$1
+    local ca_path="network/organizations/fabric-ca/$org"
     
-    cat > network/organizations/fabric-ca/$org_id/fabric-ca-server-config.yaml << EOF
-version: 1.5.5
+    cat > $ca_path/fabric-ca-server-config.yaml << EOF
 port: 7054
 debug: false
 crlsizelimit: 512000
 tls:
   enabled: true
-  certfile: ca-cert.pem
-  keyfile: ca-key.pem
+  certfile: tls-cert.pem
+  keyfile: tls-key.pem
   clientauth:
     type: noclientcert
     certfiles:
 ca:
-  name: ca-$org_id
+  name: ca-$org
   keyfile: ca-key.pem
   certfile: ca-cert.pem
   chainfile:
@@ -228,7 +249,7 @@ db:
 ldap:
   enabled: false
 affiliations:
-  $org_id:
+  $org:
     - department1
     - department2
 signing:
@@ -254,7 +275,7 @@ signing:
         - key agreement
       expiry: 8760h
 csr:
-  cn: ca.$org_id.${BRAND_DOMAIN}
+  cn: ca.$org.${BRAND_DOMAIN}
   keyrequest:
     algo: ecdsa
     size: 256
@@ -262,11 +283,11 @@ csr:
     - C: US
     - ST: "California"
     - L: "San Francisco"
-    - O: $org_id
+    - O: $org
     - OU:
   hosts:
     - localhost
-    - ca.$org_id.${BRAND_DOMAIN}
+    - ca.$org.${BRAND_DOMAIN}
   ca:
     expiry: 131400h
     pathlength: 1
@@ -301,21 +322,41 @@ updateConnectionProfiles() {
 verifyCryptoMaterials() {
     echo -e "${YELLOW}Verifying crypto materials...${NC}"
     
-    # Check if orderer TLS certs exist
+    local all_good=true
+    
+    # Check orderer certs
     if [ ! -f "network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt" ]; then
-        echo -e "${RED}Orderer TLS certificates not found!${NC}"
-        echo "Expected path: network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt"
-        return 1
+        echo -e "${RED}✗ Orderer TLS certificates not found${NC}"
+        all_good=false
+    else
+        echo -e "${GREEN}✓ Orderer certificates found${NC}"
     fi
     
-    # Check if peer organizations exist
+    # Check peer organizations
     if [ ! -d "network/organizations/peerOrganizations" ]; then
-        echo -e "${RED}Peer organizations not found!${NC}"
-        return 1
+        echo -e "${RED}✗ Peer organizations not found${NC}"
+        all_good=false
+    else
+        echo -e "${GREEN}✓ Peer organizations found${NC}"
     fi
     
-    echo -e "${GREEN}Crypto materials verified${NC}"
-    return 0
+    # Check CA certificates
+    for org in luxebags italianleather craftworkshop luxuryretail; do
+        if [ -f "network/organizations/fabric-ca/$org/ca-cert.pem" ]; then
+            echo -e "${GREEN}✓ CA certificate found for $org${NC}"
+        else
+            echo -e "${RED}✗ CA certificate missing for $org${NC}"
+            all_good=false
+        fi
+    done
+    
+    if [ "$all_good" = true ]; then
+        echo -e "${GREEN}All crypto materials verified successfully${NC}"
+        return 0
+    else
+        echo -e "${RED}Some crypto materials are missing${NC}"
+        return 1
+    fi
 }
 
 # Main execution
@@ -332,33 +373,26 @@ main() {
     mkdir -p network/system-genesis-block
     mkdir -p network/channel-artifacts
     
-    # Step 1: Generate crypto materials FIRST
+      # Step 1: Initialize Fabric CA servers FIRST
+    initializeFabricCA
+    
+    # Step 2: Generate crypto materials
     generateCryptoMaterials
     
-    # Step 2: Verify crypto materials exist
-    verifyCryptoMaterials
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Crypto materials verification failed${NC}"
-        exit 1
-    fi
-    
-    # Step 3: Generate CA configs
-    generateCAConfigs
-    
-    # Step 4: Fix paths in configtx.yaml for genesis block generation
-    #fixConfigtxPaths
-    
-    # Step 5: Generate genesis block (now crypto materials exist)
+    # Step 3: Generate genesis block
     generateGenesisBlock
     
-    # Step 6: Generate channel configuration
+    # Step 4: Generate channel configuration
     generateChannelTx
     
-    # Step 7: Generate anchor peer updates
+    # Step 5: Generate anchor peer updates
     generateAnchorPeerTx
     
-    # Step 8: Update connection profiles with actual certificates
+    # Step 6: Update connection profiles with actual certificates
     updateConnectionProfiles
+    
+    # Step 7: Verify everything was created
+    verifyCryptoMaterials
     
     echo ""
     echo -e "${GREEN}All crypto materials generated successfully!${NC}"

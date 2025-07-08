@@ -1,4 +1,4 @@
-# Crypto material configuration for Luxe Bags network
+# Crypto material configuration template
 # Generates certificates for all network participants
 
 OrdererOrgs:
@@ -20,9 +20,8 @@ OrdererOrgs:
           - 127.0.0.1
 
 PeerOrgs:
-  # Brand Organization
-  - Name: luxebags
-    Domain: luxebags.${BRAND_DOMAIN}
+  - Name: ${BRAND_NAME}
+    Domain: ${BRAND_NAME}.${BRAND_DOMAIN}
     EnableNodeOUs: true
     Template:
       Count: 2
@@ -32,9 +31,8 @@ PeerOrgs:
     Users:
       Count: 5
 
-  # Supplier Organization
-  - Name: italianleather
-    Domain: italianleather.${BRAND_DOMAIN}
+  - Name: Supplier1
+    Domain: supplier1.${BRAND_DOMAIN}
     EnableNodeOUs: true
     Template:
       Count: 1
@@ -44,9 +42,8 @@ PeerOrgs:
     Users:
       Count: 3
 
-  # Manufacturer Organization
-  - Name: craftworkshop
-    Domain: craftworkshop.${BRAND_DOMAIN}
+  - Name: Manufacturer1
+    Domain: manufacturer1.${BRAND_DOMAIN}
     EnableNodeOUs: true
     Template:
       Count: 1
@@ -56,9 +53,8 @@ PeerOrgs:
     Users:
       Count: 3
 
-  # Retailer Organization
-  - Name: luxuryretail
-    Domain: luxuryretail.${BRAND_DOMAIN}
+  - Name: Retailer1
+    Domain: retailer1.${BRAND_DOMAIN}
     EnableNodeOUs: true
     Template:
       Count: 1

@@ -48,7 +48,7 @@ startContainers() {
     set +a
 
     # Export required environment variables
-    export IMAGE_TAG=latest
+    export IMAGE_TAG=1.5.15
     export COMPOSE_PROJECT_NAME=${BRAND_ID}_${NETWORK_NAME}
     
     echo "Debug: BRAND_DOMAIN = '$BRAND_DOMAIN'"

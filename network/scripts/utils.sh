@@ -95,7 +95,7 @@ generate_orderer_services() {
         cat << EOF
   $name.orderer.\${BRAND_DOMAIN}:
     container_name: $name.orderer.\${BRAND_DOMAIN}
-    image: hyperledger/fabric-orderer:\${IMAGE_TAG}
+    image: hyperledger/fabric-orderer:2.5.12
     labels:
       service: hyperledger-fabric
     environment:
@@ -163,7 +163,7 @@ generate_peer_services() {
             cat << EOF
   $peer_name.$org_id.\${BRAND_DOMAIN}:
     container_name: $peer_name.$org_id.\${BRAND_DOMAIN}
-    image: hyperledger/fabric-peer:\${IMAGE_TAG}
+    image: hyperledger/fabric-peer:2.5.12
     labels:
       service: hyperledger-fabric
     environment:
