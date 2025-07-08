@@ -2,3 +2,4 @@ backend/gateway/node_modules
 backend/gateway/dist
 test-e2e
 generated-test
+.DS_Store
