@@ -80,7 +80,7 @@ EOF
     generate_couchdb_services $brand_config >> $output_file
 }
 
-# Function to generate orderer services
+# Function to generate orderer services - UPDATED FOR CHANNEL PARTICIPATION
 generate_orderer_services() {
     local brand_config=$1
     
@@ -95,7 +95,7 @@ generate_orderer_services() {
         cat << EOF
   $name.orderer.\${BRAND_DOMAIN}:
     container_name: $name.orderer.\${BRAND_DOMAIN}
-    image: hyperledger/fabric-orderer:2.5.12
+    image: hyperledger/fabric-orderer:2.5.5
     labels:
       service: hyperledger-fabric
     environment:
@@ -111,10 +111,8 @@ generate_orderer_services() {
       - ORDERER_GENERAL_CLUSTER_CLIENTCERTIFICATE=/var/hyperledger/orderer/tls/server.crt
       - ORDERER_GENERAL_CLUSTER_CLIENTPRIVATEKEY=/var/hyperledger/orderer/tls/server.key
       - ORDERER_GENERAL_CLUSTER_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
-      - ORDERER_GENERAL_BOOTSTRAPMETHOD=file
-      - ORDERER_GENERAL_GENESISMETHOD=file
-      - ORDERER_GENERAL_GENESISFILE=/var/hyperledger/orderer/genesis.block
-      - ORDERER_CHANNELPARTICIPATION_ENABLED=false
+      - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
+      - ORDERER_CHANNELPARTICIPATION_ENABLED=true
       - ORDERER_ADMIN_TLS_ENABLED=true
       - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
       - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key
@@ -126,7 +124,6 @@ generate_orderer_services() {
     working_dir: /opt/gopath/src/github.com/hyperledger/fabric
     command: orderer
     volumes:
-      - ../network/system-genesis-block:/var/hyperledger/orderer
       - ../network/organizations/ordererOrganizations/orderer.\${BRAND_DOMAIN}/orderers/$name.orderer.\${BRAND_DOMAIN}/msp:/var/hyperledger/orderer/msp
       - ../network/organizations/ordererOrganizations/orderer.\${BRAND_DOMAIN}/orderers/$name.orderer.\${BRAND_DOMAIN}/tls:/var/hyperledger/orderer/tls
       - ${name}_data:/var/hyperledger/production/orderer
@@ -141,6 +138,7 @@ EOF
     done
 }
 
+# Rest of the functions remain the same...
 # Function to generate peer services
 generate_peer_services() {
     local brand_config=$1
@@ -163,7 +161,7 @@ generate_peer_services() {
             cat << EOF
   $peer_name.$org_id.\${BRAND_DOMAIN}:
     container_name: $peer_name.$org_id.\${BRAND_DOMAIN}
-    image: hyperledger/fabric-peer:2.5.12
+    image: hyperledger/fabric-peer:2.5.5
     labels:
       service: hyperledger-fabric
     environment:
@@ -226,7 +224,7 @@ generate_ca_services() {
         
         cat << EOF
   ca_$org_id:
-    image: hyperledger/fabric-ca:\${IMAGE_TAG}
+    image: hyperledger/fabric-ca:1.5.7
     labels:
       service: hyperledger-fabric
     environment:

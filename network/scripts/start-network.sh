@@ -31,12 +31,6 @@ checkCryptoMaterials() {
         exit 1
     fi
     
-    if [ ! -f "network/system-genesis-block/genesis.block" ]; then
-        echo -e "${RED}Genesis block not found!${NC}"
-        echo "Please run ./scripts/generate-crypto.sh first"
-        exit 1
-    fi
-    
     echo -e "${GREEN}Crypto materials found${NC}"
 }
 
@@ -48,10 +42,13 @@ startContainers() {
     set +a
 
     # Export required environment variables
-    export IMAGE_TAG=1.5.15
+    export IMAGE_TAG=${IMAGE_TAG:-2.5.5}
+    export CA_IMAGE_TAG=${CA_IMAGE_TAG:-1.5.7}
     export COMPOSE_PROJECT_NAME=${BRAND_ID}_${NETWORK_NAME}
     
     echo "Debug: BRAND_DOMAIN = '$BRAND_DOMAIN'"
+    echo "Debug: IMAGE_TAG = '$IMAGE_TAG'"
+    echo "Debug: CA_IMAGE_TAG = '$CA_IMAGE_TAG'"
 
     envsubst < docker/docker-compose.yaml > docker/docker-compose-processed.yaml
 
@@ -74,15 +71,27 @@ waitForContainers() {
     echo "Waiting for orderer..."
     sleep 5
     
-    # Check orderer health
-    docker exec orderer1.orderer.${BRAND_DOMAIN} orderer version > /dev/null 2>&1
-    while [ $? -ne 0 ]; do
-        echo "Orderer not ready yet..."
+    # Check orderer health - updated for channel participation API
+    local orderer_ready=false
+    for i in {1..30}; do
+        if docker exec orderer1.orderer.${BRAND_DOMAIN} osnadmin channel list \
+            -o localhost:7053 \
+            --ca-file /var/hyperledger/orderer/tls/ca.crt \
+            --client-cert /var/hyperledger/orderer/tls/server.crt \
+            --client-key /var/hyperledger/orderer/tls/server.key > /dev/null 2>&1; then
+            orderer_ready=true
+            break
+        fi
+        echo "Orderer not ready yet... (attempt $i/30)"
         sleep 2
-        docker exec orderer1.orderer.${BRAND_DOMAIN} orderer version > /dev/null 2>&1
     done
     
-    echo -e "${GREEN}Orderer is ready${NC}"
+    if [ "$orderer_ready" = true ]; then
+        echo -e "${GREEN}Orderer is ready${NC}"
+    else
+        echo -e "${RED}Orderer failed to start properly${NC}"
+        exit 1
+    fi
     
     # Get actual container names from docker
     echo "Waiting for peers and databases..."
@@ -93,18 +102,30 @@ waitForContainers() {
     for container in $CONTAINERS; do
         if [[ $container == peer* ]]; then
             echo "Checking peer: $container..."
-            until docker exec $container peer version > /dev/null 2>&1; do
-                echo "$container not ready yet..."
+            for i in {1..30}; do
+                if docker exec $container peer version > /dev/null 2>&1; then
+                    echo "✓ $container is ready"
+                    break
+                fi
+                if [ $i -eq 30 ]; then
+                    echo "✗ $container failed to start"
+                    exit 1
+                fi
                 sleep 2
             done
-            echo "✓ $container is ready"
         elif [[ $container == couchdb* ]]; then
             echo "Checking database: $container..."
-            until docker exec $container curl -s http://localhost:5984/ > /dev/null 2>&1; do
-                echo "$container not ready yet..."
+            for i in {1..30}; do
+                if docker exec $container curl -s http://localhost:5984/ > /dev/null 2>&1; then
+                    echo "✓ $container is ready"
+                    break
+                fi
+                if [ $i -eq 30 ]; then
+                    echo "✗ $container failed to start"
+                    exit 1
+                fi
                 sleep 2
             done
-            echo "✓ $container is ready"
         fi
     done
     
@@ -119,87 +140,17 @@ displayNetworkStatus() {
     
     # Show running containers
     echo -e "${YELLOW}Running containers:${NC}"
-    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep ${BRAND_ID}
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(${BRAND_ID}|orderer|peer|couchdb|ca_)"
     
     echo ""
     echo -e "${YELLOW}Network endpoints:${NC}"
-    echo "- Orderer: localhost:7050"
+    echo "- Orderer1: localhost:7050 (Admin: 7053)"
+    echo "- Orderer2: localhost:8050 (Admin: 8053)"
+    echo "- Orderer3: localhost:9050 (Admin: 9053)"
     echo "- Brand Peer0: localhost:7051"
     echo "- Brand Peer1: localhost:8051"
     echo "- CouchDB (Brand Peer0): http://localhost:5984"
     echo "- CA (Brand): http://localhost:7054"
-}
-
-# Function to create join script
-createJoinScript() {
-    echo -e "${YELLOW}Creating channel join script...${NC}"
-    
-    cat > scripts/join-channel.sh << 'EOF'
-#!/bin/bash
-
-# Join all peers to the channel
-
-set -e
-
-source .env
-
-CHANNEL_NAME="luxury-supply-chain"
-ORDERER_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/msp/tlscacerts/tlsca.orderer.${BRAND_DOMAIN}-cert.pem
-
-# Function to set globals for peer
-setGlobals() {
-    local ORG=$1
-    local PEER=$2
-    
-    if [ "$ORG" == "brand" ]; then
-        export CORE_PEER_LOCALMSPID="${BRAND_NAME}MSP"
-        export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/organizations/peerOrganizations/${BRAND_NAME}.${BRAND_DOMAIN}/peers/${PEER}.${BRAND_NAME}.${BRAND_DOMAIN}/tls/ca.crt
-        export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/organizations/peerOrganizations/${BRAND_NAME}.${BRAND_DOMAIN}/users/Admin@${BRAND_NAME}.${BRAND_DOMAIN}/msp
-        export CORE_PEER_ADDRESS=${PEER}.${BRAND_NAME}.${BRAND_DOMAIN}:7051
-    fi
-    
-    export CORE_PEER_TLS_ENABLED=true
-}
-
-# Create channel
-echo "Creating channel ${CHANNEL_NAME}..."
-setGlobals brand peer0
-docker exec -e CORE_PEER_LOCALMSPID=$CORE_PEER_LOCALMSPID \
-    -e CORE_PEER_MSPCONFIGPATH=$CORE_PEER_MSPCONFIGPATH \
-    -e CORE_PEER_ADDRESS=$CORE_PEER_ADDRESS \
-    -e CORE_PEER_TLS_ENABLED=$CORE_PEER_TLS_ENABLED \
-    -e CORE_PEER_TLS_ROOTCERT_FILE=$CORE_PEER_TLS_ROOTCERT_FILE \
-    peer0.brand.${BRAND_DOMAIN} \
-    peer channel create -o orderer1.orderer.${BRAND_DOMAIN}:7050 \
-    -c $CHANNEL_NAME \
-    -f /opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts/${CHANNEL_NAME}.tx \
-    --outputBlock /opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts/${CHANNEL_NAME}.block \
-    --tls --cafile $ORDERER_CA
-
-echo "Channel created successfully"
-
-# Join peers to channel
-echo "Joining peers to channel..."
-
-# Join brand peer0
-setGlobals brand peer0
-docker exec -e CORE_PEER_LOCALMSPID=$CORE_PEER_LOCALMSPID \
-    -e CORE_PEER_MSPCONFIGPATH=$CORE_PEER_MSPCONFIGPATH \
-    -e CORE_PEER_ADDRESS=$CORE_PEER_ADDRESS \
-    -e CORE_PEER_TLS_ENABLED=$CORE_PEER_TLS_ENABLED \
-    -e CORE_PEER_TLS_ROOTCERT_FILE=$CORE_PEER_TLS_ROOTCERT_FILE \
-    peer0.brand.${BRAND_DOMAIN} \
-    peer channel join -b /opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts/${CHANNEL_NAME}.block
-
-echo "Peer0 joined channel"
-
-# Additional peers would be joined here...
-
-echo "All peers joined channel successfully!"
-EOF
-    
-    chmod +x scripts/join-channel.sh
-    echo -e "${GREEN}Channel join script created${NC}"
 }
 
 # Main execution
@@ -219,9 +170,6 @@ main() {
     
     # Wait for containers
     waitForContainers
-    
-    # Create additional scripts
-    createJoinScript
     
     # Display status
     displayNetworkStatus

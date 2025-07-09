@@ -1,5 +1,6 @@
 # Channel configuration for Luxe Bags luxury supply chain
 # Using V2_0 capabilities for compatibility
+# No system channel - using channel participation API
 
 Organizations:
   - &OrdererOrg
@@ -16,10 +17,6 @@ Organizations:
       Admins:
         Type: Signature
         Rule: "OR('OrdererMSP.admin')"
-    OrdererEndpoints:
-      - orderer1.orderer.${BRAND_DOMAIN}:7050
-      - orderer2.orderer.${BRAND_DOMAIN}:8050
-      - orderer3.orderer.${BRAND_DOMAIN}:9050
 
   - &LuxeBags
     Name: LuxeBagsMSP
@@ -38,9 +35,6 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('LuxeBagsMSP.peer')"
-    AnchorPeers:
-      - Host: peer0.luxebags.${BRAND_DOMAIN}
-        Port: 7051
 
   - &ItalianLeather
     Name: ItalianLeatherMSP
@@ -59,9 +53,6 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('ItalianLeatherMSP.peer')"
-    AnchorPeers:
-      - Host: peer0.italianleather.${BRAND_DOMAIN}
-        Port: 9051
 
   - &CraftWorkshop
     Name: CraftWorkshopMSP
@@ -80,9 +71,6 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('CraftWorkshopMSP.peer')"
-    AnchorPeers:
-      - Host: peer0.craftworkshop.${BRAND_DOMAIN}
-        Port: 10051
 
   - &LuxuryRetail
     Name: LuxuryRetailMSP
@@ -101,9 +89,6 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('LuxuryRetailMSP.peer')"
-    AnchorPeers:
-      - Host: peer0.luxuryretail.${BRAND_DOMAIN}
-        Port: 11051
 
 # Capabilities - Using V2_0 for compatibility
 Capabilities:
@@ -141,29 +126,11 @@ Application: &ApplicationDefaults
 # Orderer defaults
 Orderer: &OrdererDefaults
   OrdererType: etcdraft
-  Addresses:
-    - orderer1.orderer.${BRAND_DOMAIN}:7050
-    - orderer2.orderer.${BRAND_DOMAIN}:8050
-    - orderer3.orderer.${BRAND_DOMAIN}:9050
   BatchTimeout: 2s
   BatchSize:
     MaxMessageCount: 10
     AbsoluteMaxBytes: 99 MB
     PreferredMaxBytes: 512 KB
-  EtcdRaft:
-    Consenters:
-      - Host: orderer1.orderer.${BRAND_DOMAIN}
-        Port: 7050
-        ClientTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt
-        ServerTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt
-      - Host: orderer2.orderer.${BRAND_DOMAIN}
-        Port: 8050
-        ClientTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer2.orderer.${BRAND_DOMAIN}/tls/server.crt
-        ServerTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer2.orderer.${BRAND_DOMAIN}/tls/server.crt
-      - Host: orderer3.orderer.${BRAND_DOMAIN}
-        Port: 9050
-        ClientTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer3.orderer.${BRAND_DOMAIN}/tls/server.crt
-        ServerTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer3.orderer.${BRAND_DOMAIN}/tls/server.crt
   Organizations:
   Policies:
     Readers:
@@ -178,6 +145,8 @@ Orderer: &OrdererDefaults
     BlockValidation:
       Type: ImplicitMeta
       Rule: "ANY Writers"
+  Capabilities:
+    <<: *OrdererCapabilities
 
 # Channel defaults
 Channel: &ChannelDefaults
@@ -196,13 +165,32 @@ Channel: &ChannelDefaults
 
 # Profiles
 Profiles:
-  LuxuryOrdererGenesis:
+  # Channel genesis for application channel
+  LuxurySupplyChain:
     <<: *ChannelDefaults
     Orderer:
       <<: *OrdererDefaults
+      OrdererType: etcdraft
+      EtcdRaft:
+        Consenters:
+          - Host: orderer1.orderer.${BRAND_DOMAIN}
+            Port: 7050
+            ClientTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt
+            ServerTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls/server.crt
+          - Host: orderer2.orderer.${BRAND_DOMAIN}
+            Port: 8050
+            ClientTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer2.orderer.${BRAND_DOMAIN}/tls/server.crt
+            ServerTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer2.orderer.${BRAND_DOMAIN}/tls/server.crt
+          - Host: orderer3.orderer.${BRAND_DOMAIN}
+            Port: 9050
+            ClientTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer3.orderer.${BRAND_DOMAIN}/tls/server.crt
+            ServerTLSCert: ../network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer3.orderer.${BRAND_DOMAIN}/tls/server.crt
+      Addresses:
+        - orderer1.orderer.${BRAND_DOMAIN}:7050
+        - orderer2.orderer.${BRAND_DOMAIN}:8050
+        - orderer3.orderer.${BRAND_DOMAIN}:9050
       Organizations:
         - *OrdererOrg
-      Capabilities: *OrdererCapabilities
     Application:
       <<: *ApplicationDefaults
       Organizations:
@@ -210,22 +198,3 @@ Profiles:
         - *ItalianLeather
         - *CraftWorkshop
         - *LuxuryRetail
-    Consortiums:
-      LuxuryConsortium:
-        Organizations:
-          - *LuxeBags
-          - *ItalianLeather
-          - *CraftWorkshop
-          - *LuxuryRetail
-
-  LuxurySupplyChain:
-    Consortium: LuxuryConsortium
-    <<: *ChannelDefaults
-    Application:
-      <<: *ApplicationDefaults
-      Organizations:
-        - *LuxeBags
-        - *ItalianLeather
-        - *CraftWorkshop
-        - *LuxuryRetail
-      Capabilities: *ApplicationCapabilities

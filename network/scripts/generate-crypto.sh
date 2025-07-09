@@ -21,92 +21,77 @@ echo "============================================"
 generateCryptoMaterials() {
     echo -e "${YELLOW}Generating certificates using cryptogen tool...${NC}"
     
-    # Check if cryptogen exists
-    if ! command -v cryptogen &> /dev/null; then
-        echo -e "${RED}cryptogen tool not found. Installing...${NC}"
-        curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.12 1.5.12 -d -s
-        export PATH=$PWD/bin:$PATH
-    fi
-    
     # Remove previous crypto material
     rm -rf network/organizations/peerOrganizations
     rm -rf network/organizations/ordererOrganizations
     
-    # Generate crypto material
-    cryptogen generate --config=config/crypto-config.yaml --output="network/organizations"
+    # Generate crypto material using Docker
+    docker run --rm \
+        -v "$(pwd)/config":/config \
+        -v "$(pwd)/network/organizations":/organizations \
+        hyperledger/fabric-tools:2.5.5 \
+        cryptogen generate --config=/config/crypto-config.yaml --output=/organizations
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to generate crypto material${NC}"
         exit 1
     fi
     
+    # Fix permissions if needed
+    if [ "$EUID" -ne 0 ]; then
+        chmod -R 755 network/organizations 2>/dev/null || true
+    fi
+    
     echo -e "${GREEN}Crypto materials generated successfully${NC}"
-}
-
-# Function to fix configtx paths
-fixConfigtxPaths() {
-    echo -e "${YELLOW}Fixing paths in configtx.yaml...${NC}"
-    
-    # Create a temporary configtx.yaml with corrected paths
-    cp config/configtx.yaml config/configtx_temp.yaml
-    
-    # Get the absolute path to the organizations directory
-    ORG_PATH="$PWD/network/organizations"
-    
-    # Replace relative paths with absolute paths in the temp file
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' "s|../organizations|${ORG_PATH}|g" config/configtx_temp.yaml
-    else
-        # Linux
-        sed -i "s|../organizations|${ORG_PATH}|g" config/configtx_temp.yaml
-    fi
-    
-    echo -e "${GREEN}Paths fixed in configtx.yaml${NC}"
-}
-
-# Function to generate genesis block
-generateGenesisBlock() {
-    echo -e "${YELLOW}Generating genesis block...${NC}"
-    
-    # Check if configtxgen exists
-    if ! command -v configtxgen &> /dev/null; then
-        echo -e "${RED}configtxgen tool not found. Installing...${NC}"
-        if [ ! -d "bin" ]; then
-            curl -sSL https://bit.ly/2ysbOFE | bash -s -- 2.5.12 1.5.12 -d -s
-        fi
-        export PATH=$PWD/bin:$PATH
-    fi
-    
-    # Set config path
-    export FABRIC_CFG_PATH="$PWD/config"
-    
-    # Generate genesis block with quoted path to handle spaces
-    configtxgen -profile LuxuryOrdererGenesis -channelID system-channel -outputBlock "$PWD/network/system-genesis-block/genesis.block"
-    
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to generate genesis block${NC}"
-        exit 1
-    fi
-    
-    echo -e "${GREEN}Genesis block generated successfully${NC}"
 }
 
 # Function to generate channel transaction
 generateChannelTx() {
     echo -e "${YELLOW}Generating channel configuration transaction...${NC}"
     
-    export FABRIC_CFG_PATH=$PWD/config
-    
     # Get channel name from environment or use default
     CHANNEL_NAME=${CHANNEL_NAME:-"luxury-supply-chain"}
     
-    # Generate channel configuration transaction
-    configtxgen -profile LuxurySupplyChain -outputCreateChannelTx network/channel-artifacts/${CHANNEL_NAME}.tx -channelID ${CHANNEL_NAME}
+    # Ensure channel-artifacts directory exists
+    mkdir -p network/channel-artifacts
     
+    # Create a temporary configtx.yaml with correct paths for Docker
+    cp config/configtx.yaml config/configtx-docker.yaml
+    
+    # Replace the paths in the temporary file to work with Docker mounts
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        sed -i '' 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
+    else
+        # Linux
+        sed -i 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
+    fi
+    
+    # Generate channel configuration transaction using Docker
+    docker run --rm \
+      -v "$(pwd)/config":/config \
+      -v "$(pwd)/network/organizations":/organizations \
+      -v "$(pwd)/network/channel-artifacts":/channel-artifacts \
+      -e FABRIC_CFG_PATH=/config \
+      hyperledger/fabric-tools:2.5.5 \
+      configtxgen -configPath /config \
+                  -profile LuxurySupplyChain \
+                  -outputCreateChannelTx /channel-artifacts/${CHANNEL_NAME}.tx \
+                  -channelID ${CHANNEL_NAME}
+
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to generate channel transaction${NC}"
+        # Clean up temporary file
+        rm -f config/configtx-docker.yaml
         exit 1
+    fi
+    
+    # Clean up temporary file
+    rm -f config/configtx-docker.yaml
+    
+    # Fix permissions if needed
+    if [ "$EUID" -ne 0 ]; then
+        chmod -R 755 network/channel-artifacts 2>/dev/null || true
     fi
     
     echo -e "${GREEN}Channel transaction generated successfully${NC}"
@@ -116,13 +101,10 @@ generateChannelTx() {
 generateAnchorPeerTx() {
     echo -e "${YELLOW}Generating anchor peer transactions...${NC}"
     
-    export FABRIC_CFG_PATH=$PWD/config
-    
     # Get channel name
     CHANNEL_NAME=${CHANNEL_NAME:-"luxury-supply-chain"}
     
     # Extract organization MSP IDs from the config
-    # Look for lines like "Name: LuxeBagsMSP" under Organizations
     ORGS=()
     while IFS= read -r line; do
         if [[ $line =~ ^[[:space:]]*Name:[[:space:]]*(.+MSP)$ ]]; then
@@ -139,18 +121,45 @@ generateAnchorPeerTx() {
     
     echo "Found organizations: ${ORGS[@]}"
     
+    # Use the same temporary configtx file approach
+    cp config/configtx.yaml config/configtx-docker.yaml
+    
+    # Replace the paths in the temporary file to work with Docker mounts
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        # macOS
+        sed -i '' 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
+    else
+        # Linux
+        sed -i 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
+    fi
+    
     for org in "${ORGS[@]}"; do
         echo "Generating anchor peer transaction for $org"
-        configtxgen -profile LuxurySupplyChain -outputAnchorPeersUpdate network/channel-artifacts/${org}anchors.tx -channelID ${CHANNEL_NAME} -asOrg $org
+        
+        # Generate anchor peer update using Docker
+        docker run --rm \
+            -v "$(pwd)/config":/config \
+            -v "$(pwd)/network/organizations":/organizations \
+            -v "$(pwd)/network/channel-artifacts":/channel-artifacts \
+            -e FABRIC_CFG_PATH=/config \
+            hyperledger/fabric-tools:2.5.5 \
+            configtxgen -configPath /config -profile LuxurySupplyChain -outputAnchorPeersUpdate /channel-artifacts/${org}anchors.tx -channelID ${CHANNEL_NAME} -asOrg $org -config /config/configtx-docker.yaml
         
         if [ $? -ne 0 ]; then
             echo -e "${YELLOW}Warning: Could not generate anchor peer transaction for $org${NC}"
         fi
     done
     
+    # Clean up temporary file
+    rm -f config/configtx-docker.yaml
+    
+    # Fix permissions if needed
+    if [ "$EUID" -ne 0 ]; then
+        chmod -R 755 network/channel-artifacts 2>/dev/null || true
+    fi
+    
     echo -e "${GREEN}Anchor peer transactions generated${NC}"
 }
-
 
 # Function to initialize Fabric CA
 initializeFabricCA() {
@@ -180,7 +189,7 @@ initializeFabricCA() {
             -v "$(pwd)/$ca_path":/etc/hyperledger/fabric-ca-server \
             -e FABRIC_CA_HOME=/etc/hyperledger/fabric-ca-server \
             -e FABRIC_CA_SERVER_CA_NAME=ca-$org \
-            hyperledger/fabric-ca:${CA_VERSION:-1.5.12} \
+            hyperledger/fabric-ca:1.5.7 \
             fabric-ca-server init -b admin:adminpw
         
         # Fix permissions if needed
@@ -370,28 +379,24 @@ main() {
     
     # Create necessary directories
     mkdir -p network/organizations
-    mkdir -p network/system-genesis-block
     mkdir -p network/channel-artifacts
     
-      # Step 1: Initialize Fabric CA servers FIRST
+    # Step 1: Initialize Fabric CA servers FIRST
     initializeFabricCA
     
     # Step 2: Generate crypto materials
     generateCryptoMaterials
     
-    # Step 3: Generate genesis block
-    generateGenesisBlock
-    
-    # Step 4: Generate channel configuration
+    # Step 3: Generate channel configuration
     generateChannelTx
     
-    # Step 5: Generate anchor peer updates
+    # Step 4: Generate anchor peer updates
     generateAnchorPeerTx
     
-    # Step 6: Update connection profiles with actual certificates
+    # Step 5: Update connection profiles with actual certificates
     updateConnectionProfiles
     
-    # Step 7: Verify everything was created
+    # Step 6: Verify everything was created
     verifyCryptoMaterials
     
     echo ""
