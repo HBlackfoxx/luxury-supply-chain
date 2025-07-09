@@ -45,120 +45,17 @@ generateCryptoMaterials() {
     echo -e "${GREEN}Crypto materials generated successfully${NC}"
 }
 
-# Function to generate channel transaction
-generateChannelTx() {
-    echo -e "${YELLOW}Generating channel configuration transaction...${NC}"
-    
-    # Get channel name from environment or use default
-    CHANNEL_NAME=${CHANNEL_NAME:-"luxury-supply-chain"}
+# Function to prepare for channel creation
+prepareChannelArtifacts() {
+    echo -e "${YELLOW}Preparing channel artifacts directory...${NC}"
     
     # Ensure channel-artifacts directory exists
     mkdir -p network/channel-artifacts
     
-    # Create a temporary configtx.yaml with correct paths for Docker
-    cp config/configtx.yaml config/configtx-docker.yaml
+    echo "Note: Channel genesis block will be created during channel creation with osnadmin"
+    echo "Note: Anchor peers are defined in configtx.yaml and will be set automatically"
     
-    # Replace the paths in the temporary file to work with Docker mounts
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
-    else
-        # Linux
-        sed -i 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
-    fi
-    
-    # Generate channel configuration transaction using Docker
-    docker run --rm \
-      -v "$(pwd)/config":/config \
-      -v "$(pwd)/network/organizations":/organizations \
-      -v "$(pwd)/network/channel-artifacts":/channel-artifacts \
-      -e FABRIC_CFG_PATH=/config \
-      hyperledger/fabric-tools:2.5.5 \
-      configtxgen -configPath /config \
-                  -profile LuxurySupplyChain \
-                  -outputCreateChannelTx /channel-artifacts/${CHANNEL_NAME}.tx \
-                  -channelID ${CHANNEL_NAME}
-
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Failed to generate channel transaction${NC}"
-        # Clean up temporary file
-        rm -f config/configtx-docker.yaml
-        exit 1
-    fi
-    
-    # Clean up temporary file
-    rm -f config/configtx-docker.yaml
-    
-    # Fix permissions if needed
-    if [ "$EUID" -ne 0 ]; then
-        chmod -R 755 network/channel-artifacts 2>/dev/null || true
-    fi
-    
-    echo -e "${GREEN}Channel transaction generated successfully${NC}"
-}
-
-# Function to generate anchor peer transactions
-generateAnchorPeerTx() {
-    echo -e "${YELLOW}Generating anchor peer transactions...${NC}"
-    
-    # Get channel name
-    CHANNEL_NAME=${CHANNEL_NAME:-"luxury-supply-chain"}
-    
-    # Extract organization MSP IDs from the config
-    ORGS=()
-    while IFS= read -r line; do
-        if [[ $line =~ ^[[:space:]]*Name:[[:space:]]*(.+MSP)$ ]]; then
-            msp="${BASH_REMATCH[1]}"
-            # Skip OrdererMSP
-            if [[ "$msp" != *"OrdererMSP"* ]]; then
-                ORGS+=("$msp")
-            fi
-        fi
-    done < config/configtx.yaml
-    
-    # Remove duplicates
-    ORGS=($(echo "${ORGS[@]}" | tr ' ' '\n' | sort -u | tr '\n' ' '))
-    
-    echo "Found organizations: ${ORGS[@]}"
-    
-    # Use the same temporary configtx file approach
-    cp config/configtx.yaml config/configtx-docker.yaml
-    
-    # Replace the paths in the temporary file to work with Docker mounts
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
-    else
-        # Linux
-        sed -i 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
-    fi
-    
-    for org in "${ORGS[@]}"; do
-        echo "Generating anchor peer transaction for $org"
-        
-        # Generate anchor peer update using Docker
-        docker run --rm \
-            -v "$(pwd)/config":/config \
-            -v "$(pwd)/network/organizations":/organizations \
-            -v "$(pwd)/network/channel-artifacts":/channel-artifacts \
-            -e FABRIC_CFG_PATH=/config \
-            hyperledger/fabric-tools:2.5.5 \
-            configtxgen -configPath /config -profile LuxurySupplyChain -outputAnchorPeersUpdate /channel-artifacts/${org}anchors.tx -channelID ${CHANNEL_NAME} -asOrg $org -config /config/configtx-docker.yaml
-        
-        if [ $? -ne 0 ]; then
-            echo -e "${YELLOW}Warning: Could not generate anchor peer transaction for $org${NC}"
-        fi
-    done
-    
-    # Clean up temporary file
-    rm -f config/configtx-docker.yaml
-    
-    # Fix permissions if needed
-    if [ "$EUID" -ne 0 ]; then
-        chmod -R 755 network/channel-artifacts 2>/dev/null || true
-    fi
-    
-    echo -e "${GREEN}Anchor peer transactions generated${NC}"
+    echo -e "${GREEN}Channel preparation complete${NC}"
 }
 
 # Function to initialize Fabric CA
@@ -196,11 +93,6 @@ initializeFabricCA() {
         if [ "$EUID" -ne 0 ]; then
             chmod -R 755 $ca_path 2>/dev/null || true
         fi
-        
-        # Create fabric-ca-server-config.yaml if it doesn't exist
-        if [ ! -f "$ca_path/fabric-ca-server-config.yaml" ]; then
-            createCAConfig $org
-        fi
     }
     
     # Initialize CAs for all organizations
@@ -210,121 +102,6 @@ initializeFabricCA() {
     init_ca "luxuryretail"
     
     echo -e "${GREEN}All CA servers initialized${NC}"
-}
-
-# Function to create CA config
-createCAConfig() {
-    local org=$1
-    local ca_path="network/organizations/fabric-ca/$org"
-    
-    cat > $ca_path/fabric-ca-server-config.yaml << EOF
-port: 7054
-debug: false
-crlsizelimit: 512000
-tls:
-  enabled: true
-  certfile: tls-cert.pem
-  keyfile: tls-key.pem
-  clientauth:
-    type: noclientcert
-    certfiles:
-ca:
-  name: ca-$org
-  keyfile: ca-key.pem
-  certfile: ca-cert.pem
-  chainfile:
-crl:
-  expiry: 24h
-registry:
-  maxenrollments: -1
-  identities:
-    - name: admin
-      pass: adminpw
-      type: client
-      affiliation: ""
-      attrs:
-        hf.Registrar.Roles: "*"
-        hf.Registrar.DelegateRoles: "*"
-        hf.Revoker: true
-        hf.IntermediateCA: true
-        hf.GenCRL: true
-        hf.Registrar.Attributes: "*"
-        hf.AffiliationMgr: true
-db:
-  type: sqlite3
-  datasource: fabric-ca-server.db
-  tls:
-    enabled: false
-ldap:
-  enabled: false
-affiliations:
-  $org:
-    - department1
-    - department2
-signing:
-  default:
-    usage:
-      - digital signature
-    expiry: 8760h
-  profiles:
-    ca:
-      usage:
-        - cert sign
-        - crl sign
-      expiry: 43800h
-      caconstraint:
-        isca: true
-        maxpathlen: 0
-    tls:
-      usage:
-        - signing
-        - key encipherment
-        - server auth
-        - client auth
-        - key agreement
-      expiry: 8760h
-csr:
-  cn: ca.$org.${BRAND_DOMAIN}
-  keyrequest:
-    algo: ecdsa
-    size: 256
-  names:
-    - C: US
-    - ST: "California"
-    - L: "San Francisco"
-    - O: $org
-    - OU:
-  hosts:
-    - localhost
-    - ca.$org.${BRAND_DOMAIN}
-  ca:
-    expiry: 131400h
-    pathlength: 1
-idemix:
-  rhpoolsize: 1000
-  nonceexpiration: 15s
-  noncesweepinterval: 15m
-bccsp:
-  default: SW
-  sw:
-    hash: SHA2
-    security: 256
-    filekeystore:
-      keystore: msp/keystore
-EOF
-}
-
-# Function to update connection profiles with actual certificates
-updateConnectionProfiles() {
-    echo -e "${YELLOW}Updating connection profiles with TLS certificates...${NC}"
-    
-    # Source the utils script to get the update function
-    source scripts/utils.sh
-    
-    # Update the profiles
-    update_connection_profiles "config" "network/organizations"
-    
-    echo -e "${GREEN}Connection profiles updated successfully${NC}"
 }
 
 # Function to verify crypto materials
@@ -374,8 +151,10 @@ main() {
     echo ""
     
     # Check prerequisites
-    source scripts/utils.sh
-    check_prerequisites
+    if [ -f "scripts/utils.sh" ]; then
+        source scripts/utils.sh
+        check_prerequisites
+    fi
     
     # Create necessary directories
     mkdir -p network/organizations
@@ -387,16 +166,10 @@ main() {
     # Step 2: Generate crypto materials
     generateCryptoMaterials
     
-    # Step 3: Generate channel configuration
-    generateChannelTx
+    # Step 3: Prepare for channel creation
+    prepareChannelArtifacts
     
-    # Step 4: Generate anchor peer updates
-    generateAnchorPeerTx
-    
-    # Step 5: Update connection profiles with actual certificates
-    updateConnectionProfiles
-    
-    # Step 6: Verify everything was created
+    # Step 4: Verify everything was created
     verifyCryptoMaterials
     
     echo ""

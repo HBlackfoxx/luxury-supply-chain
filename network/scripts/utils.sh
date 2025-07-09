@@ -112,6 +112,7 @@ generate_orderer_services() {
       - ORDERER_GENERAL_CLUSTER_CLIENTPRIVATEKEY=/var/hyperledger/orderer/tls/server.key
       - ORDERER_GENERAL_CLUSTER_ROOTCAS=[/var/hyperledger/orderer/tls/ca.crt]
       - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
+      - ORDERER_GENERAL_SYSTEMCHANNEL=""
       - ORDERER_CHANNELPARTICIPATION_ENABLED=true
       - ORDERER_ADMIN_TLS_ENABLED=true
       - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
@@ -126,6 +127,7 @@ generate_orderer_services() {
     volumes:
       - ../network/organizations/ordererOrganizations/orderer.\${BRAND_DOMAIN}/orderers/$name.orderer.\${BRAND_DOMAIN}/msp:/var/hyperledger/orderer/msp
       - ../network/organizations/ordererOrganizations/orderer.\${BRAND_DOMAIN}/orderers/$name.orderer.\${BRAND_DOMAIN}/tls:/var/hyperledger/orderer/tls
+      - ../network/channel-artifacts:/opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts
       - ${name}_data:/var/hyperledger/production/orderer
     ports:
       - $port:$port
@@ -133,6 +135,10 @@ generate_orderer_services() {
       - $ops_port:$ops_port
     networks:
       - luxury-network
+    extra_hosts:
+      - "orderer1.orderer.\${BRAND_DOMAIN}:host-gateway"
+      - "orderer2.orderer.\${BRAND_DOMAIN}:host-gateway"
+      - "orderer3.orderer.\${BRAND_DOMAIN}:host-gateway"
 
 EOF
     done

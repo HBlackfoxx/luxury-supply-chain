@@ -41,37 +41,20 @@ verifyNetwork() {
 createChannelWithOsnadmin() {
     echo -e "${YELLOW}Creating channel using osnadmin...${NC}"
     
-    # Create a temporary configtx.yaml with correct paths for Docker
-    cp config/configtx.yaml config/configtx-docker.yaml
-    
-    # Replace the paths in the temporary file to work with Docker mounts
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        # macOS
-        sed -i '' 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
-    else
-        # Linux
-        sed -i 's|../network/organizations|/organizations|g' config/configtx-docker.yaml
-    fi
-    
     # First, create the channel genesis block using Docker
     echo "Creating genesis block for channel..."
     docker run --rm \
         -v "$(pwd)/config":/config \
-        -v "$(pwd)/network/organizations":/organizations \
+        -v "$(pwd)/network":/network \
         -v "$(pwd)/network/channel-artifacts":/channel-artifacts \
         -e FABRIC_CFG_PATH=/config \
         hyperledger/fabric-tools:2.5.5 \
-        configtxgen -configPath /config -profile LuxurySupplyChain -outputBlock /channel-artifacts/${CHANNEL_NAME}.block -channelID $CHANNEL_NAME -config /config/configtx-docker.yaml
+        configtxgen -configPath /config -profile LuxurySupplyChain -outputBlock /channel-artifacts/${CHANNEL_NAME}.block -channelID $CHANNEL_NAME
     
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to create genesis block${NC}"
-        # Clean up temporary file
-        rm -f config/configtx-docker.yaml
         exit 1
     fi
-    
-    # Clean up temporary file
-    rm -f config/configtx-docker.yaml
     
     # Fix permissions if needed
     if [ "$EUID" -ne 0 ]; then
@@ -151,44 +134,6 @@ joinChannel() {
     fi
 }
 
-# Function to update anchor peers (simplified)
-updateAnchorPeer() {
-    local ORG=$1
-    local ORG_MSP=$2
-    local PORT=$3
-    
-    echo -e "${YELLOW}Updating anchor peer for $ORG_MSP...${NC}"
-    
-    # Set peer environment
-    export CORE_PEER_LOCALMSPID="${ORG_MSP}"
-    export CORE_PEER_TLS_ROOTCERT_FILE=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/peers/peer0.${ORG}.${BRAND_DOMAIN}/tls/ca.crt
-    export CORE_PEER_MSPCONFIGPATH=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/peerOrganizations/${ORG}.${BRAND_DOMAIN}/users/Admin@${ORG}.${BRAND_DOMAIN}/msp
-    export CORE_PEER_ADDRESS=peer0.${ORG}.${BRAND_DOMAIN}:${PORT}
-    
-    local ORDERER_CA=/opt/gopath/src/github.com/hyperledger/fabric/peer/crypto/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/msp/tlscacerts/tlsca.orderer.${BRAND_DOMAIN}-cert.pem
-    
-    # Update anchor peer using the pre-generated update file
-    docker exec \
-        -e CORE_PEER_LOCALMSPID=$CORE_PEER_LOCALMSPID \
-        -e CORE_PEER_TLS_ENABLED=true \
-        -e CORE_PEER_TLS_ROOTCERT_FILE=$CORE_PEER_TLS_ROOTCERT_FILE \
-        -e CORE_PEER_MSPCONFIGPATH=$CORE_PEER_MSPCONFIGPATH \
-        -e CORE_PEER_ADDRESS=$CORE_PEER_ADDRESS \
-        peer0.${ORG}.${BRAND_DOMAIN} \
-        peer channel update \
-            -o orderer1.orderer.${BRAND_DOMAIN}:7050 \
-            -c $CHANNEL_NAME \
-            -f /opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts/${ORG_MSP}anchors.tx \
-            --tls \
-            --cafile $ORDERER_CA
-    
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Anchor peer updated for $ORG_MSP${NC}"
-    else
-        echo -e "${YELLOW}Warning: Anchor peer update may have failed for $ORG_MSP${NC}"
-    fi
-}
-
 # Function to verify channel creation
 verifyChannel() {
     echo -e "${YELLOW}Verifying channel creation...${NC}"
@@ -235,15 +180,12 @@ main() {
     # Join luxuryretail peers
     joinChannel luxuryretail LuxuryRetailMSP peer0 11051
     
-    # Update anchor peers
+    # Note about anchor peers
     echo ""
-    echo -e "${BLUE}Updating anchor peers...${NC}"
-    
-    # Update each organization's anchor peer individually
-    updateAnchorPeer luxebags LuxeBagsMSP 7051
-    updateAnchorPeer italianleather ItalianLeatherMSP 9051
-    updateAnchorPeer craftworkshop CraftWorkshopMSP 10051
-    updateAnchorPeer luxuryretail LuxuryRetailMSP 11051
+    echo -e "${BLUE}Anchor peer configuration...${NC}"
+    echo "Note: Anchor peers are defined in configtx.yaml and are automatically"
+    echo "configured when the channel is created with the genesis block."
+    echo "No additional anchor peer updates are needed."
     
     # Verify channel
     echo ""

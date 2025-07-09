@@ -37,7 +37,12 @@ cleanupVolumes() {
     echo -e "${YELLOW}Cleaning up Docker volumes...${NC}"
     
     # Remove any volumes related to this network
-    docker volume ls | grep ${BRAND_ID}_${NETWORK_NAME} | awk '{print $2}' | xargs -r docker volume rm
+    docker volume ls | grep ${BRAND_ID}_${NETWORK_NAME} | awk '{print $2}' | xargs -r docker volume rm 2>/dev/null || true
+    
+    # Also clean up orderer data volumes specifically
+    docker volume rm -f ${BRAND_ID}_${NETWORK_NAME}_orderer1_data 2>/dev/null || true
+    docker volume rm -f ${BRAND_ID}_${NETWORK_NAME}_orderer2_data 2>/dev/null || true
+    docker volume rm -f ${BRAND_ID}_${NETWORK_NAME}_orderer3_data 2>/dev/null || true
     
     echo -e "${GREEN}Volumes cleaned up${NC}"
 }
@@ -54,15 +59,27 @@ cleanupNetworks() {
 
 # Function to clean up generated files
 cleanupFiles() {
-    read -p "Do you want to remove generated crypto materials? (y/N) " -n 1 -r
-    echo
-    if [[ $REPLY =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Removing crypto materials...${NC}"
+    # Check if -f flag was passed to force cleanup
+    if [[ "$1" == "-f" ]]; then
+        echo -e "${YELLOW}Force removing crypto materials...${NC}"
         rm -rf network/organizations/peerOrganizations
         rm -rf network/organizations/ordererOrganizations
+        rm -rf network/organizations/fabric-ca
         rm -rf network/system-genesis-block
-        rm -rf network/channel-artifacts
+        rm -rf network/channel-artifacts/*
         echo -e "${GREEN}Crypto materials removed${NC}"
+    else
+        read -p "Do you want to remove generated crypto materials? (y/N) " -n 1 -r
+        echo
+        if [[ $REPLY =~ ^[Yy]$ ]]; then
+            echo -e "${YELLOW}Removing crypto materials...${NC}"
+            rm -rf network/organizations/peerOrganizations
+            rm -rf network/organizations/ordererOrganizations
+            rm -rf network/organizations/fabric-ca
+            rm -rf network/system-genesis-block
+            rm -rf network/channel-artifacts/*
+            echo -e "${GREEN}Crypto materials removed${NC}"
+        fi
     fi
 }
 
@@ -80,12 +97,12 @@ main() {
     # Clean up networks
     cleanupNetworks
     
-    # Ask about crypto cleanup
-    cleanupFiles
+    # Ask about crypto cleanup (pass any arguments to this function)
+    cleanupFiles "$@"
     
     echo ""
     echo -e "${GREEN}Network stopped successfully!${NC}"
 }
 
 # Run main function
-main
+main "$@"

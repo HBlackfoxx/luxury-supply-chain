@@ -37,18 +37,20 @@ checkCryptoMaterials() {
 # Function to start Docker containers
 startContainers() {
     echo -e "${YELLOW}Starting Docker containers...${NC}"
-    set -a
-    source .env
-    set +a
-
+    
     # Export required environment variables
     export IMAGE_TAG=${IMAGE_TAG:-2.5.5}
     export CA_IMAGE_TAG=${CA_IMAGE_TAG:-1.5.7}
     export COMPOSE_PROJECT_NAME=${BRAND_ID}_${NETWORK_NAME}
+    export BRAND_DOMAIN=${BRAND_DOMAIN}
+    export BRAND_NAME=${BRAND_NAME}
+    export BRAND_ID=${BRAND_ID}
+    export NETWORK_NAME=${NETWORK_NAME}
     
     echo "Debug: BRAND_DOMAIN = '$BRAND_DOMAIN'"
     echo "Debug: IMAGE_TAG = '$IMAGE_TAG'"
     echo "Debug: CA_IMAGE_TAG = '$CA_IMAGE_TAG'"
+
 
     envsubst < docker/docker-compose.yaml > docker/docker-compose-processed.yaml
 
@@ -73,13 +75,25 @@ waitForContainers() {
     
     # Check orderer health - updated for channel participation API
     local orderer_ready=false
+    echo "Note: Orderers may show 'system channel' errors initially - this is normal with channel participation API"
+    echo "The errors will stop once we create the first channel"
+    
     for i in {1..30}; do
+        # First check if container is running
+        if ! docker ps | grep -q "orderer1.orderer.${BRAND_DOMAIN}"; then
+            echo "Orderer container not running, waiting..."
+            sleep 2
+            continue
+        fi
+        
+        # Check if osnadmin is accessible (it should return empty list initially)
         if docker exec orderer1.orderer.${BRAND_DOMAIN} osnadmin channel list \
             -o localhost:7053 \
             --ca-file /var/hyperledger/orderer/tls/ca.crt \
             --client-cert /var/hyperledger/orderer/tls/server.crt \
-            --client-key /var/hyperledger/orderer/tls/server.key > /dev/null 2>&1; then
+            --client-key /var/hyperledger/orderer/tls/server.key 2>&1 | grep -q "Status.*200"; then
             orderer_ready=true
+            echo "Orderer admin API is accessible (no channels yet - this is expected)"
             break
         fi
         echo "Orderer not ready yet... (attempt $i/30)"
@@ -90,6 +104,8 @@ waitForContainers() {
         echo -e "${GREEN}Orderer is ready${NC}"
     else
         echo -e "${RED}Orderer failed to start properly${NC}"
+        echo "Checking orderer logs:"
+        docker logs orderer1.orderer.${BRAND_DOMAIN} 2>&1 | tail -50
         exit 1
     fi
     
@@ -109,6 +125,7 @@ waitForContainers() {
                 fi
                 if [ $i -eq 30 ]; then
                     echo "✗ $container failed to start"
+                    docker logs $container 2>&1 | tail -20
                     exit 1
                 fi
                 sleep 2
@@ -140,7 +157,7 @@ displayNetworkStatus() {
     
     # Show running containers
     echo -e "${YELLOW}Running containers:${NC}"
-    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(${BRAND_ID}|orderer|peer|couchdb|ca_)"
+    docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "(${BRAND_ID}|orderer|peer|couchdb|ca_)" || true
     
     echo ""
     echo -e "${YELLOW}Network endpoints:${NC}"
@@ -159,8 +176,10 @@ main() {
     echo ""
     
     # Check prerequisites
-    source scripts/utils.sh
-    check_prerequisites
+    if [ -f "scripts/utils.sh" ]; then
+        source scripts/utils.sh
+        check_prerequisites
+    fi
     
     # Check crypto materials
     checkCryptoMaterials

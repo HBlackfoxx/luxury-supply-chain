@@ -80,13 +80,37 @@ echo "Domain: $BRAND_DOMAIN"
 # Create output directory structure
 echo -e "${YELLOW}Creating directory structure...${NC}"
 mkdir -p $OUTPUT_DIR/{config,network,chaincode,scripts,docker}
-mkdir -p $OUTPUT_DIR/network/{organizations,channel-artifacts,system-genesis-block}
+mkdir -p $OUTPUT_DIR/network/{organizations,channel-artifacts}
+# Note: No system-genesis-block directory for channel participation API
 
 # Generate crypto configuration
 echo -e "${YELLOW}Generating crypto configuration...${NC}"
 export BRAND_NAME=$BRAND_NAME
 export BRAND_DOMAIN=$BRAND_DOMAIN
-envsubst < config/crypto-config/crypto-config-template.yaml > $OUTPUT_DIR/config/crypto-config.yaml
+
+# Debug output
+echo "BRAND_NAME: $BRAND_NAME"
+echo "BRAND_DOMAIN: $BRAND_DOMAIN"
+
+# Check which template file exists and use the appropriate one
+if [ -f "config/crypto-config/crypto-config-template.yaml" ]; then
+    CRYPTO_TEMPLATE="config/crypto-config/crypto-config-template.yaml"
+elif [ -f "config/crypto-config/crypto-config-template-brand.yaml" ]; then
+    CRYPTO_TEMPLATE="config/crypto-config/crypto-config-template-brand.yaml"
+else
+    echo -e "${RED}Error: No crypto-config template found${NC}"
+    exit 1
+fi
+
+echo "Using crypto template: $CRYPTO_TEMPLATE"
+envsubst < $CRYPTO_TEMPLATE > $OUTPUT_DIR/config/crypto-config.yaml
+
+# Verify the substitution worked
+if grep -q '\${BRAND_DOMAIN}' $OUTPUT_DIR/config/crypto-config.yaml; then
+    echo -e "${RED}Error: Environment variable substitution failed${NC}"
+    echo "crypto-config.yaml still contains unreplaced variables"
+    exit 1
+fi
 
 # Generate channel configuration
 echo -e "${YELLOW}Generating channel configuration...${NC}"
@@ -111,7 +135,6 @@ NETWORK_NAME=$NETWORK_NAME
 COMPOSE_PROJECT_NAME=${BRAND_ID}_${NETWORK_NAME}
 IMAGE_TAG=2.5.5
 CA_IMAGE_TAG=1.5.7
-SYS_CHANNEL=system-channel
 EOF
 
 # Generate startup scripts
@@ -171,6 +194,11 @@ $(generate_network_topology $BRAND_CONFIG)
 - **Channel Config**: config/configtx.yaml
 - **Docker Compose**: docker/docker-compose.yaml
 - **Connection Profiles**: config/connection-*.json
+
+## Notes
+
+This network uses Hyperledger Fabric 2.5 with the channel participation API.
+There is no system channel - channels are created dynamically using osnadmin.
 EOF
 
 echo -e "${GREEN}Network generation complete!${NC}"

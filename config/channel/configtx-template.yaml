@@ -35,6 +35,9 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('LuxeBagsMSP.peer')"
+    AnchorPeers:
+      - Host: peer0.luxebags.${BRAND_DOMAIN}
+        Port: 7051
 
   - &ItalianLeather
     Name: ItalianLeatherMSP
@@ -53,6 +56,9 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('ItalianLeatherMSP.peer')"
+    AnchorPeers:
+      - Host: peer0.italianleather.${BRAND_DOMAIN}
+        Port: 9051
 
   - &CraftWorkshop
     Name: CraftWorkshopMSP
@@ -71,6 +77,9 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('CraftWorkshopMSP.peer')"
+    AnchorPeers:
+      - Host: peer0.craftworkshop.${BRAND_DOMAIN}
+        Port: 10051
 
   - &LuxuryRetail
     Name: LuxuryRetailMSP
@@ -89,6 +98,9 @@ Organizations:
       Endorsement:
         Type: Signature
         Rule: "OR('LuxuryRetailMSP.peer')"
+    AnchorPeers:
+      - Host: peer0.luxuryretail.${BRAND_DOMAIN}
+        Port: 11051
 
 # Capabilities - Using V2_0 for compatibility
 Capabilities:
