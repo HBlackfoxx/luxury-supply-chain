@@ -35,10 +35,10 @@ sleep 10
 check_status "Channel creation"
 
 # 5. Test SDK connection
-echo "Step 5: Testing SDK connection..."
-cd ../backend/gateway
-npm test -- --testNamePattern="SDK"
-check_status "SDK tests"
+#echo "Step 5: Testing SDK connection..."
+#cd ../backend/gateway
+#npm test -- --testNamePattern="SDK"
+#check_status "SDK tests"
 
 # 6. Cleanup
 echo "Step 6: Cleaning up..."

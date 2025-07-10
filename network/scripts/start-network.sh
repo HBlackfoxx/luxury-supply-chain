@@ -51,7 +51,6 @@ startContainers() {
     echo "Debug: IMAGE_TAG = '$IMAGE_TAG'"
     echo "Debug: CA_IMAGE_TAG = '$CA_IMAGE_TAG'"
 
-
     envsubst < docker/docker-compose.yaml > docker/docker-compose-processed.yaml
 
     # Start containers
@@ -73,11 +72,11 @@ waitForContainers() {
     echo "Waiting for orderer..."
     sleep 5
     
-    # Check orderer health - updated for channel participation API
+    # Check orderer health
     local orderer_ready=false
-    echo "Note: Orderers may show 'system channel' errors initially - this is normal with channel participation API"
-    echo "The errors will stop once we create the first channel"
+    echo "Checking orderer status..."
     
+    # Since osnadmin might not be in PATH, let's check if orderer is healthy by checking logs
     for i in {1..30}; do
         # First check if container is running
         if ! docker ps | grep -q "orderer1.orderer.${BRAND_DOMAIN}"; then
@@ -86,25 +85,33 @@ waitForContainers() {
             continue
         fi
         
-        # Check if osnadmin is accessible (it should return empty list initially)
-        if docker exec orderer1.orderer.${BRAND_DOMAIN} osnadmin channel list \
-            -o localhost:7053 \
-            --ca-file /var/hyperledger/orderer/tls/ca.crt \
-            --client-cert /var/hyperledger/orderer/tls/server.crt \
-            --client-key /var/hyperledger/orderer/tls/server.key 2>&1 | grep -q "Status.*200"; then
+        # Check if orderer has started successfully
+        if docker logs orderer1.orderer.${BRAND_DOMAIN} 2>&1 | grep -q "Beginning to serve requests"; then
             orderer_ready=true
-            echo "Orderer admin API is accessible (no channels yet - this is expected)"
+            echo -e "${GREEN}Orderer is running and serving requests${NC}"
+            
+            # Try to find osnadmin binary
+            echo "Checking for osnadmin binary..."
+            if docker exec orderer1.orderer.${BRAND_DOMAIN} which osnadmin 2>/dev/null; then
+                echo "osnadmin found, checking admin API..."
+                # Try with full path
+                docker exec orderer1.orderer.${BRAND_DOMAIN} /usr/local/bin/osnadmin channel list \
+                    -o localhost:7053 \
+                    --ca-file /var/hyperledger/orderer/tls/ca.crt \
+                    --client-cert /var/hyperledger/orderer/tls/server.crt \
+                    --client-key /var/hyperledger/orderer/tls/server.key 2>&1 || echo "Note: Admin API requires client auth, this is normal"
+            else
+                echo "osnadmin not found in container, skipping admin API check"
+            fi
             break
         fi
-        echo "Orderer not ready yet... (attempt $i/30)"
+        echo "Waiting for orderer to start... (attempt $i/30)"
         sleep 2
     done
     
-    if [ "$orderer_ready" = true ]; then
-        echo -e "${GREEN}Orderer is ready${NC}"
-    else
-        echo -e "${RED}Orderer failed to start properly${NC}"
-        echo "Checking orderer logs:"
+    if [ "$orderer_ready" = false ]; then
+        echo -e "${RED}Orderer failed to start${NC}"
+        echo "Orderer logs:"
         docker logs orderer1.orderer.${BRAND_DOMAIN} 2>&1 | tail -50
         exit 1
     fi

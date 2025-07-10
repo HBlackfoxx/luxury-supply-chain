@@ -39,7 +39,7 @@ verifyNetwork() {
 
 # Function to create channel using osnadmin
 createChannelWithOsnadmin() {
-    echo -e "${YELLOW}Creating channel using osnadmin...${NC}"
+    echo -e "${YELLOW}Creating channel using channel participation API...${NC}"
     
     # First, create the channel genesis block using Docker
     echo "Creating genesis block for channel..."
@@ -61,7 +61,7 @@ createChannelWithOsnadmin() {
         chmod -R 755 network/channel-artifacts 2>/dev/null || true
     fi
     
-    # Join each orderer to the channel using osnadmin
+    # Join each orderer to the channel using osnadmin from fabric-tools container
     local orderers=("orderer1" "orderer2" "orderer3")
     local ports=(7050 8050 9050)
     local admin_ports=(7053 8053 9053)
@@ -72,14 +72,19 @@ createChannelWithOsnadmin() {
         
         echo "Joining $orderer to channel..."
         
-        # Use osnadmin to join the orderer to the channel
-        docker exec ${orderer}.orderer.${BRAND_DOMAIN} osnadmin channel join \
-            --channelID $CHANNEL_NAME \
-            --config-block /opt/gopath/src/github.com/hyperledger/fabric/peer/channel-artifacts/${CHANNEL_NAME}.block \
-            -o localhost:${admin_port} \
-            --ca-file /var/hyperledger/orderer/tls/ca.crt \
-            --client-cert /var/hyperledger/orderer/tls/server.crt \
-            --client-key /var/hyperledger/orderer/tls/server.key
+        # Use fabric-tools container to run osnadmin
+        docker run --rm \
+            --network ${CHANNEL_NAME} \
+            -v "$(pwd)/network/channel-artifacts":/channel-artifacts \
+            -v "$(pwd)/network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/${orderer}.orderer.${BRAND_DOMAIN}/tls":/orderer-tls \
+            hyperledger/fabric-tools:2.5.5 \
+            osnadmin channel join \
+                --channelID $CHANNEL_NAME \
+                --config-block /channel-artifacts/${CHANNEL_NAME}.block \
+                -o ${orderer}.orderer.${BRAND_DOMAIN}:${admin_port} \
+                --ca-file /orderer-tls/ca.crt \
+                --client-cert /orderer-tls/server.crt \
+                --client-key /orderer-tls/server.key
         
         if [ $? -eq 0 ]; then
             echo -e "${GREEN}$orderer joined channel successfully${NC}"
@@ -144,11 +149,16 @@ verifyChannel() {
     # Check orderer logs
     echo ""
     echo "Checking orderer status..."
-    docker exec orderer1.orderer.${BRAND_DOMAIN} osnadmin channel list -o localhost:7053 \
-        --ca-file /var/hyperledger/orderer/tls/ca.crt \
-        --client-cert /var/hyperledger/orderer/tls/server.crt \
-        --client-key /var/hyperledger/orderer/tls/server.key
-    
+    docker run --rm \
+        --network ${CHANNEL_NAME} \
+        -v "$(pwd)/network/organizations/ordererOrganizations/orderer.${BRAND_DOMAIN}/orderers/orderer1.orderer.${BRAND_DOMAIN}/tls":/orderer-tls \
+            hyperledger/fabric-tools:2.5.5 \
+            osnadmin channel list \
+        -o orderer1.orderer.${BRAND_DOMAIN}:7053 \
+        --ca-file /orderer-tls/ca.crt \
+        --client-cert /orderer-tls/server.crt \
+        --client-key /orderer-tls/server.key
+
     echo -e "${GREEN}Channel verification complete${NC}"
 }
 
