@@ -17,7 +17,8 @@ export interface Registry {
   metrics(): Promise<string>;
 }
 
-// Simple metrics storage (replace with prom-client when installed)
+// Simple metrics storage (install prom-client for production use:)
+// npm install prom-client
 interface Metric {
   name: string;
   help: string;

@@ -1,5 +1,8 @@
 backend/gateway/node_modules
 backend/gateway/dist
+backend/gateway/network
+backend/gateway/logs
+backend/gateway/identities
 test-e2e
 generated-test
 .DS_Store

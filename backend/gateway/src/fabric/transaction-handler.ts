@@ -2,7 +2,7 @@
 // Transaction Handler for Hyperledger Fabric
 // Updated for fabric-gateway 1.x API
 
-import { Contract, Network, Gateway, ProposalOptions, CommittedTransaction } from '@hyperledger/fabric-gateway';
+import { Contract, Network, Gateway, ProposalOptions, SubmittedTransaction } from '@hyperledger/fabric-gateway';
 
 export interface TransactionOptions {
   transientData?: Record<string, Buffer>;
@@ -120,7 +120,7 @@ export class TransactionHandler {
     
     // Submit transaction and wait for commit
     let submitted: Uint8Array;
-    let commit: CommittedTransaction;
+    let commit: SubmittedTransaction;
     
     if (proposalOptions.transientData || proposalOptions.endorsingOrganizations) {
       // Use newProposal for advanced options

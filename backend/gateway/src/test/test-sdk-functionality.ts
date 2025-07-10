@@ -215,7 +215,7 @@ async function testEventListener(results: TestResult[]) {
     
     // Test checkpointer creation
     const checkpointer = eventListener.createCheckpointer('test-checkpoint');
-    if (!checkpointer.getBlockNumber) {
+    if (!checkpointer.checkpoint || !checkpointer.getBlockNumber) {
       throw new Error('Invalid checkpointer structure');
     }
     

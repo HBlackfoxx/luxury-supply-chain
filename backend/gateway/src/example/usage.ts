@@ -201,6 +201,9 @@ async function main() {
 
     // Step 9: Test with transient data (private data)
     console.log('Testing private data transaction...');
+    console.log('Note: Transient data is not supported in fabric-gateway 1.x');
+    
+    // This will log a warning but continue without transient data
     const privateData = {
       price: '25000',
       cost: '8000',
@@ -216,11 +219,11 @@ async function main() {
       'createProductWithPrivateData',
       {
         arguments: ['BAG-004', JSON.stringify({ id: 'BAG-004', model: 'Limited Edition' })],
-        transientData
+        transientData // This will be ignored with a warning
       }
     );
 
-    console.log('Private data transaction:', {
+    console.log('Private data transaction (without actual private data):', {
       success: privateResult.success,
       transactionId: privateResult.transactionId
     });

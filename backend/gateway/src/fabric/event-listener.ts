@@ -2,12 +2,13 @@
 // Event Listener Manager for Hyperledger Fabric
 // Updated for fabric-gateway 1.x API
 
-import { Network, Contract, Checkpointer, CloseableAsyncIterable } from '@hyperledger/fabric-gateway';
+import { Network, Contract, ChaincodeEventsRequest, BlockEventsRequest, FilteredBlockEventsRequest } from '@hyperledger/fabric-gateway';
 import { EventEmitter } from 'events';
 
 export interface EventListenerOptions {
   startBlock?: bigint;
-  checkpointer?: Checkpointer;
+  // Checkpointer is optional and implementation-specific
+  checkpointer?: any;
 }
 
 export interface ChaincodeEvent {
@@ -27,9 +28,10 @@ export type EventHandler = (event: ChaincodeEvent) => Promise<void> | void;
 export type BlockHandler = (event: BlockEvent) => Promise<void> | void;
 
 interface ActiveListener {
-  iterator: CloseableAsyncIterable<any>;
+  request: ChaincodeEventsRequest | BlockEventsRequest | FilteredBlockEventsRequest;
   handlers: Set<EventHandler | BlockHandler>;
   active: boolean;
+  cleanup?: () => void;
 }
 
 export class EventListenerManager extends EventEmitter {
@@ -48,19 +50,17 @@ export class EventListenerManager extends EventEmitter {
     let listener = this.activeListeners.get(listenerId);
     
     if (!listener) {
-      // Create new event iterator
-      const eventOptions: any = {};
-      if (options.startBlock !== undefined) {
-        eventOptions.startBlock = options.startBlock;
-      }
-      if (options.checkpointer) {
-        eventOptions.checkpointer = options.checkpointer;
-      }
-
-      const iterator = await contract.newChaincodeEventsRequest(eventName, eventOptions);
+      // Create new event request
+      const request = contract.events(eventName);
       
+      if (options.startBlock !== undefined) {
+        request.startBlock(options.startBlock);
+      }
+      // Note: Checkpointer implementation is custom and optional
+      // In production, you would implement persistent checkpoint storage
+
       listener = {
-        iterator,
+        request,
         handlers: new Set([handler]),
         active: true
       };
@@ -68,7 +68,7 @@ export class EventListenerManager extends EventEmitter {
       this.activeListeners.set(listenerId, listener);
       
       // Start processing events
-      this.processEvents(listenerId, iterator, 'chaincode');
+      this.processEvents(listenerId, request, 'chaincode');
       
       this.emit('listenerStarted', { listenerId, eventName });
     } else {
@@ -90,16 +90,15 @@ export class EventListenerManager extends EventEmitter {
     let listener = this.activeListeners.get(listenerId);
     
     if (!listener) {
-      // Create new block event iterator
-      const eventOptions: any = {};
+      // Create new block event request
+      const request = network.blockEvents();
+      
       if (options.startBlock !== undefined) {
-        eventOptions.startBlock = options.startBlock;
+        request.startBlock(options.startBlock);
       }
 
-      const iterator = await network.newBlockEventsRequest(eventOptions);
-      
       listener = {
-        iterator,
+        request,
         handlers: new Set([handler]),
         active: true
       };
@@ -107,7 +106,7 @@ export class EventListenerManager extends EventEmitter {
       this.activeListeners.set(listenerId, listener);
       
       // Start processing blocks
-      this.processEvents(listenerId, iterator, 'block');
+      this.processEvents(listenerId, request, 'block');
       
       this.emit('listenerStarted', { listenerId, type: 'block' });
     } else {
@@ -129,21 +128,20 @@ export class EventListenerManager extends EventEmitter {
     let listener = this.activeListeners.get(listenerId);
     
     if (!listener) {
-      // Create new filtered block event iterator
-      const eventOptions: any = {};
+      // Create new filtered block event request
+      const request = network.filteredBlockEvents();
+      
       if (options.startBlock !== undefined) {
-        eventOptions.startBlock = options.startBlock;
+        request.startBlock(options.startBlock);
       }
 
-      const iterator = await network.newFilteredBlockEventsRequest(eventOptions);
-      
       // Wrap handler to match BlockHandler signature
       const wrappedHandler: BlockHandler = async (event) => {
         await handler(event.blockNumber);
       };
       
       listener = {
-        iterator,
+        request,
         handlers: new Set([wrappedHandler]),
         active: true
       };
@@ -151,7 +149,7 @@ export class EventListenerManager extends EventEmitter {
       this.activeListeners.set(listenerId, listener);
       
       // Start processing filtered blocks
-      this.processEvents(listenerId, iterator, 'filtered-block');
+      this.processEvents(listenerId, request, 'filtered-block');
       
       this.emit('listenerStarted', { listenerId, type: 'filtered-block' });
     } else {
@@ -167,17 +165,19 @@ export class EventListenerManager extends EventEmitter {
 
   private async processEvents(
     listenerId: string,
-    iterator: CloseableAsyncIterable<any>,
+    request: ChaincodeEventsRequest | BlockEventsRequest | FilteredBlockEventsRequest,
     type: 'chaincode' | 'block' | 'filtered-block'
   ): Promise<void> {
     try {
-      for await (const event of iterator) {
+      const events = request.getEvents();
+      
+      for await (const event of events) {
         const listener = this.activeListeners.get(listenerId);
         if (!listener || !listener.active) {
           break;
         }
 
-        let processedEvent: ChaincodeEvent | BlockEvent;
+        let processedEvent: ChaincodeEvent | BlockEvent | undefined;
         
         if (type === 'chaincode') {
           // Process chaincode event
@@ -206,15 +206,17 @@ export class EventListenerManager extends EventEmitter {
         }
 
         // Call specific handlers
-        for (const handler of listener.handlers) {
-          try {
-            await handler(processedEvent as any);
-          } catch (error) {
-            this.emit('error', {
-              listenerId,
-              event: processedEvent,
-              error
-            });
+        if (processedEvent) {
+          for (const handler of listener.handlers) {
+            try {
+              await handler(processedEvent as any);
+            } catch (error) {
+              this.emit('error', {
+                listenerId,
+                event: processedEvent,
+                error
+              });
+            }
           }
         }
       }
@@ -244,7 +246,10 @@ export class EventListenerManager extends EventEmitter {
     const listener = this.activeListeners.get(listenerId);
     if (listener) {
       listener.active = false;
-      listener.iterator.close();
+      // Close the event stream
+      if (listener.cleanup) {
+        listener.cleanup();
+      }
       this.activeListeners.delete(listenerId);
       this.emit('listenerStopped', { listenerId });
     }
@@ -253,7 +258,9 @@ export class EventListenerManager extends EventEmitter {
   public stopAllListeners(): void {
     for (const [listenerId, listener] of this.activeListeners) {
       listener.active = false;
-      listener.iterator.close();
+      if (listener.cleanup) {
+        listener.cleanup();
+      }
       this.emit('listenerStopped', { listenerId });
     }
     this.activeListeners.clear();
@@ -279,20 +286,21 @@ export class EventListenerManager extends EventEmitter {
     }
   }
 
-  // Helper method to create a checkpoint
-  public createCheckpointer(checkpointId: string): Checkpointer {
-    let blockNumber: bigint | undefined;
+  // Helper method to create a simple checkpointer
+  // Note: In fabric-gateway 1.x, checkpointers are optional and mainly used
+  // to track which blocks have been processed
+  public createCheckpointer(checkpointId: string): any {
+    let lastBlockNumber: bigint | undefined;
     
+    // Return a simple object that can track block numbers
     return {
-      async checkpoint(event: { blockNumber: bigint }): Promise<void> {
-        blockNumber = event.blockNumber;
-        // In a real implementation, this would persist to a database
+      id: checkpointId,
+      setBlockNumber(blockNumber: bigint): void {
+        lastBlockNumber = blockNumber;
         console.log(`Checkpoint ${checkpointId} at block ${blockNumber}`);
       },
-      
-      async getBlockNumber(): Promise<bigint | undefined> {
-        // In a real implementation, this would read from a database
-        return blockNumber;
+      getBlockNumber(): bigint | undefined {
+        return lastBlockNumber;
       }
     };
   }

@@ -151,22 +151,27 @@ export class IdentityManager {
     }
 
     // Load admin identity to register the new user
-    const adminIdentity = await this.getIdentity(orgId, 'admin');
+    const adminIdentity = await this.loadStoredIdentity(orgId, 'admin');
     if (!adminIdentity) {
       throw new Error('Admin identity not found. Please enroll admin first.');
     }
 
     const caClient = await this.getCAClient(orgId);
     
-    // Build user object for registration
-    const adminUser = {
-      enrollment: {
-        signingIdentity: adminIdentity.identity.credentials.privateKey,
-        identity: {
-          certificate: adminIdentity.identity.credentials.certificate
-        }
-      },
-      mspId: adminIdentity.identity.mspId
+    // Build user context for CA operations
+    const provider = caClient.newIdentityService();
+    
+    // Create an admin user context
+    const adminUserContext = {
+      getName: () => 'admin',
+      getMspid: () => adminIdentity.mspId,
+      getIdentity: () => ({
+        certificate: adminIdentity.certificate
+      }),
+      getSigningIdentity: () => ({
+        certificate: adminIdentity.certificate,
+        key: adminIdentity.privateKey
+      })
     };
 
     // Register the user
@@ -176,7 +181,7 @@ export class IdentityManager {
       role: options.role || 'client',
       attrs: options.attrs || [],
       maxEnrollments: -1
-    }, adminUser);
+    }, adminUserContext as any);
 
     // Enroll the user
     const enrollment = await caClient.enroll({
@@ -219,8 +224,7 @@ export class IdentityManager {
     
     const identity: Identity = {
       credentials: certBytes,
-      mspId: storedIdentity.mspId,
-      type: 'X.509'
+      mspId: storedIdentity.mspId
     };
     
     const privateKey = crypto.createPrivateKey(storedIdentity.privateKey);
