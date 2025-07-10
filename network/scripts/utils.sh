@@ -81,6 +81,7 @@ EOF
 }
 
 # Function to generate orderer services - UPDATED FOR CHANNEL PARTICIPATION
+# Function to generate orderer services - UPDATED FOR CHANNEL PARTICIPATION
 generate_orderer_services() {
     local brand_config=$1
     
@@ -114,6 +115,8 @@ generate_orderer_services() {
       - ORDERER_GENERAL_BOOTSTRAPMETHOD=none
       - ORDERER_GENERAL_SYSTEMCHANNEL=""
       - ORDERER_CHANNELPARTICIPATION_ENABLED=true
+      - ORDERER_GENERAL_CLUSTER_REPLICATIONBACKGROUNDREFRESHINTERVAL=0s
+      - ORDERER_GENERAL_CLUSTER_REPLICATIONMAXRETRIES=0
       - ORDERER_ADMIN_TLS_ENABLED=true
       - ORDERER_ADMIN_TLS_CERTIFICATE=/var/hyperledger/orderer/tls/server.crt
       - ORDERER_ADMIN_TLS_PRIVATEKEY=/var/hyperledger/orderer/tls/server.key

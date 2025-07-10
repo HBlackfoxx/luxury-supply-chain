@@ -1,9 +1,9 @@
+// backend/gateway/src/monitoring/fabric-monitor.ts
 // Monitoring and Logging Framework for Fabric Operations
-// Tracks performance, errors, and network health
+// Updated with correct winston v2 API
 
 import { EventEmitter } from 'events';
 import * as winston from 'winston';
-import * as promClient from 'prom-client';
 
 export interface MetricsConfig {
   enablePrometheus: boolean;
@@ -12,123 +12,127 @@ export interface MetricsConfig {
   logFile?: string;
 }
 
+export interface Registry {
+  contentType: string;
+  metrics(): Promise<string>;
+}
+
+// Simple metrics storage (replace with prom-client when installed)
+interface Metric {
+  name: string;
+  help: string;
+  type: 'counter' | 'histogram' | 'gauge';
+  labels: string[];
+  values: Map<string, number>;
+}
+
 export class FabricMonitor extends EventEmitter {
-  private logger: winston.Logger;
-  private metrics: Map<string, promClient.Counter | promClient.Histogram | promClient.Gauge> = new Map();
-  private metricsRegistry: promClient.Registry;
+  private logger: any; // Winston logger instance
+  private metrics: Map<string, Metric> = new Map();
+  private metricsRegistry: Registry;
 
   constructor(config: MetricsConfig) {
     super();
     this.setupLogger(config);
+    this.metricsRegistry = this.createSimpleRegistry();
     this.setupMetrics(config);
   }
 
   private setupLogger(config: MetricsConfig): void {
-    const transports: winston.transport[] = [
+    const transports: any[] = [
       new winston.transports.Console({
-        format: winston.format.combine(
-          winston.format.timestamp(),
-          winston.format.colorize(),
-          winston.format.printf(({ timestamp, level, message, ...meta }) => {
-            return `${timestamp} [${level}]: ${message} ${Object.keys(meta).length ? JSON.stringify(meta) : ''}`;
-          })
-        )
+        colorize: true,
+        timestamp: true,
+        prettyPrint: true,
+        level: config.logLevel
       })
     ];
 
     if (config.logFile) {
       transports.push(new winston.transports.File({
         filename: config.logFile,
-        format: winston.format.combine(
-          winston.format.timestamp(),
-          winston.format.json()
-        )
+        timestamp: true,
+        json: true,
+        level: config.logLevel
       }));
     }
 
-    this.logger = winston.createLogger({
+    this.logger = new winston.Logger({
       level: config.logLevel,
       transports
     });
   }
 
+  private createSimpleRegistry(): Registry {
+    return {
+      contentType: 'text/plain',
+      metrics: async () => {
+        let output = '';
+        for (const [name, metric] of this.metrics) {
+          output += `# HELP ${metric.name} ${metric.help}\n`;
+          output += `# TYPE ${metric.name} ${metric.type}\n`;
+          
+          for (const [labels, value] of metric.values) {
+            output += `${metric.name}${labels} ${value}\n`;
+          }
+        }
+        return output;
+      }
+    };
+  }
+
   private setupMetrics(config: MetricsConfig): void {
     if (!config.enablePrometheus) return;
 
-    this.metricsRegistry = new promClient.Registry();
+    // Define metrics
+    this.createMetric('fabric_tx_submitted_total', 'counter', 
+      'Total number of transactions submitted', 
+      ['channel', 'chaincode', 'function']);
 
-    // Transaction metrics
-    this.metrics.set('tx_submitted', new promClient.Counter({
-      name: 'fabric_tx_submitted_total',
-      help: 'Total number of transactions submitted',
-      labelNames: ['channel', 'chaincode', 'function'],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_tx_success_total', 'counter',
+      'Total number of successful transactions',
+      ['channel', 'chaincode', 'function']);
 
-    this.metrics.set('tx_success', new promClient.Counter({
-      name: 'fabric_tx_success_total',
-      help: 'Total number of successful transactions',
-      labelNames: ['channel', 'chaincode', 'function'],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_tx_failure_total', 'counter',
+      'Total number of failed transactions',
+      ['channel', 'chaincode', 'function', 'error_type']);
 
-    this.metrics.set('tx_failure', new promClient.Counter({
-      name: 'fabric_tx_failure_total',
-      help: 'Total number of failed transactions',
-      labelNames: ['channel', 'chaincode', 'function', 'error_type'],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_tx_duration_seconds', 'histogram',
+      'Transaction execution duration in seconds',
+      ['channel', 'chaincode', 'function']);
 
-    this.metrics.set('tx_duration', new promClient.Histogram({
-      name: 'fabric_tx_duration_seconds',
-      help: 'Transaction execution duration in seconds',
-      labelNames: ['channel', 'chaincode', 'function'],
-      buckets: [0.1, 0.5, 1, 2, 5, 10, 30],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_query_total', 'counter',
+      'Total number of queries executed',
+      ['channel', 'chaincode', 'function']);
 
-    // Query metrics
-    this.metrics.set('query_count', new promClient.Counter({
-      name: 'fabric_query_total',
-      help: 'Total number of queries executed',
-      labelNames: ['channel', 'chaincode', 'function'],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_query_duration_seconds', 'histogram',
+      'Query execution duration in seconds',
+      ['channel', 'chaincode', 'function']);
 
-    this.metrics.set('query_duration', new promClient.Histogram({
-      name: 'fabric_query_duration_seconds',
-      help: 'Query execution duration in seconds',
-      labelNames: ['channel', 'chaincode', 'function'],
-      buckets: [0.01, 0.05, 0.1, 0.5, 1, 2],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_connection_active', 'gauge',
+      'Number of active gateway connections',
+      ['org']);
 
-    // Connection metrics
-    this.metrics.set('connection_active', new promClient.Gauge({
-      name: 'fabric_connection_active',
-      help: 'Number of active gateway connections',
-      labelNames: ['org'],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_event_received_total', 'counter',
+      'Total number of events received',
+      ['chaincode', 'event_name']);
 
-    // Event metrics
-    this.metrics.set('event_received', new promClient.Counter({
-      name: 'fabric_event_received_total',
-      help: 'Total number of events received',
-      labelNames: ['chaincode', 'event_name'],
-      registers: [this.metricsRegistry]
-    }));
-
-    // Block metrics
-    this.metrics.set('block_height', new promClient.Gauge({
-      name: 'fabric_block_height',
-      help: 'Current block height of the channel',
-      labelNames: ['channel'],
-      registers: [this.metricsRegistry]
-    }));
+    this.createMetric('fabric_block_height', 'gauge',
+      'Current block height of the channel',
+      ['channel']);
 
     // Start metrics server
     this.startMetricsServer(config.prometheusPort);
+  }
+
+  private createMetric(name: string, type: Metric['type'], help: string, labels: string[]): void {
+    this.metrics.set(name, {
+      name,
+      type,
+      help,
+      labels,
+      values: new Map()
+    });
   }
 
   private startMetricsServer(port: number): void {
@@ -143,6 +147,36 @@ export class FabricMonitor extends EventEmitter {
     app.listen(port, () => {
       this.logger.info(`Metrics server listening on port ${port}`);
     });
+  }
+
+  // Metric update methods
+  private updateMetric(name: string, labels: Record<string, string>, value: number, operation: 'inc' | 'set' | 'observe' = 'inc'): void {
+    const metric = this.metrics.get(name);
+    if (!metric) return;
+
+    const labelKey = this.createLabelKey(labels);
+    
+    switch (operation) {
+      case 'inc':
+        const current = metric.values.get(labelKey) || 0;
+        metric.values.set(labelKey, current + value);
+        break;
+      case 'set':
+        metric.values.set(labelKey, value);
+        break;
+      case 'observe':
+        // For histogram, we'd need to calculate buckets
+        // For now, just store the latest value
+        metric.values.set(labelKey, value);
+        break;
+    }
+  }
+
+  private createLabelKey(labels: Record<string, string>): string {
+    const pairs = Object.entries(labels)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([k, v]) => `${k}="${v}"`);
+    return pairs.length > 0 ? `{${pairs.join(',')}}` : '';
   }
 
   // Logging methods
@@ -165,19 +199,16 @@ export class FabricMonitor extends EventEmitter {
       function: data.function
     };
 
-    (this.metrics.get('tx_submitted') as promClient.Counter).inc(labels);
+    this.updateMetric('fabric_tx_submitted_total', labels, 1);
     
     if (data.success) {
-      (this.metrics.get('tx_success') as promClient.Counter).inc(labels);
+      this.updateMetric('fabric_tx_success_total', labels, 1);
     } else {
       const errorType = data.error?.message.split(':')[0] || 'unknown';
-      (this.metrics.get('tx_failure') as promClient.Counter).inc({
-        ...labels,
-        error_type: errorType
-      });
+      this.updateMetric('fabric_tx_failure_total', { ...labels, error_type: errorType }, 1);
     }
 
-    (this.metrics.get('tx_duration') as promClient.Histogram).observe(labels, data.duration);
+    this.updateMetric('fabric_tx_duration_seconds', labels, data.duration, 'observe');
   }
 
   public logQuery(data: {
@@ -196,8 +227,8 @@ export class FabricMonitor extends EventEmitter {
       function: data.function
     };
 
-    (this.metrics.get('query_count') as promClient.Counter).inc(labels);
-    (this.metrics.get('query_duration') as promClient.Histogram).observe(labels, data.duration);
+    this.updateMetric('fabric_query_total', labels, 1);
+    this.updateMetric('fabric_query_duration_seconds', labels, data.duration, 'observe');
   }
 
   public logConnection(data: {
@@ -206,11 +237,7 @@ export class FabricMonitor extends EventEmitter {
     activeConnections: number;
   }): void {
     this.logger.info('Connection event', data);
-
-    (this.metrics.get('connection_active') as promClient.Gauge).set(
-      { org: data.org },
-      data.activeConnections
-    );
+    this.updateMetric('fabric_connection_active', { org: data.org }, data.activeConnections, 'set');
   }
 
   public logEvent(data: {
@@ -219,19 +246,19 @@ export class FabricMonitor extends EventEmitter {
     transactionId: string;
     blockNumber: bigint;
   }): void {
-    this.logger.debug('Event received', data);
+    this.logger.debug('Event received', {
+      ...data,
+      blockNumber: data.blockNumber.toString()
+    });
 
-    (this.metrics.get('event_received') as promClient.Counter).inc({
+    this.updateMetric('fabric_event_received_total', {
       chaincode: data.chaincode,
       event_name: data.eventName
-    });
+    }, 1);
   }
 
   public updateBlockHeight(channel: string, height: number): void {
-    (this.metrics.get('block_height') as promClient.Gauge).set(
-      { channel },
-      height
-    );
+    this.updateMetric('fabric_block_height', { channel }, height, 'set');
   }
 
   public logError(error: Error, context?: any): void {
@@ -254,7 +281,7 @@ export class FabricMonitor extends EventEmitter {
     this.logger.debug(message, context);
   }
 
-  public getMetricsRegistry(): promClient.Registry {
+  public getMetricsRegistry(): Registry {
     return this.metricsRegistry;
   }
 }

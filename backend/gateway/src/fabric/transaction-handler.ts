@@ -1,10 +1,11 @@
+// backend/gateway/src/fabric/transaction-handler.ts
 // Transaction Handler for Hyperledger Fabric
-// Manages blockchain transactions with retry logic and error handling
+// Updated for fabric-gateway 1.x API
 
-import { Contract, Network, Gateway, ProposalOptions, TransientMap } from '@hyperledger/fabric-gateway';
+import { Contract, Network, Gateway, ProposalOptions, CommittedTransaction } from '@hyperledger/fabric-gateway';
 
 export interface TransactionOptions {
-  transientData?: TransientMap;
+  transientData?: Record<string, Buffer>;
   endorsingOrganizations?: string[];
   arguments?: string[];
   timeout?: number;
@@ -17,12 +18,13 @@ export interface TransactionResult {
   result?: any;
   error?: Error;
   timestamp: Date;
-  blockNumber?: number;
+  blockNumber?: bigint;
   retryCount?: number;
 }
 
 export class TransactionHandler {
   private readonly textDecoder = new TextDecoder();
+  private readonly textEncoder = new TextEncoder();
   private readonly defaultTimeout = 30000; // 30 seconds
   private readonly defaultRetries = 3;
 
@@ -32,7 +34,6 @@ export class TransactionHandler {
     options: TransactionOptions = {}
   ): Promise<TransactionResult> {
     const startTime = Date.now();
-    const timeout = options.timeout || this.defaultTimeout;
     const maxRetries = options.retries || this.defaultRetries;
     
     let lastError: Error | undefined;
@@ -43,8 +44,7 @@ export class TransactionHandler {
         const result = await this.executeTransaction(
           contract,
           transactionName,
-          options,
-          timeout
+          options
         );
 
         return {
@@ -82,14 +82,7 @@ export class TransactionHandler {
   ): Promise<TransactionResult> {
     try {
       const resultBytes = await contract.evaluateTransaction(transactionName, ...args);
-      const resultString = this.textDecoder.decode(resultBytes);
-      
-      let result: any;
-      try {
-        result = JSON.parse(resultString);
-      } catch {
-        result = resultString;
-      }
+      const result = this.parseResult(resultBytes);
 
       return {
         success: true,
@@ -108,23 +101,44 @@ export class TransactionHandler {
   private async executeTransaction(
     contract: Contract,
     transactionName: string,
-    options: TransactionOptions,
-    timeout: number
-  ): Promise<{ transactionId: string; payload: any; blockNumber: number }> {
+    options: TransactionOptions
+  ): Promise<{ transactionId: string; payload: any; blockNumber: bigint }> {
     const args = options.arguments || [];
     
-    // Create proposal with options
-    const proposal = contract.newProposal(transactionName, {
-      arguments: args,
-      transientData: options.transientData,
-      endorsingOrganizations: options.endorsingOrganizations
-    });
-
-    // Endorse the transaction
-    const transaction = await proposal.endorse();
-
-    // Submit the transaction
-    const commit = await transaction.submit();
+    // Create proposal
+    const proposalOptions: ProposalOptions = {};
+    
+    // Add transient data if provided
+    if (options.transientData) {
+      proposalOptions.transientData = options.transientData;
+    }
+    
+    // Add endorsing organizations if specified
+    if (options.endorsingOrganizations) {
+      proposalOptions.endorsingOrganizations = options.endorsingOrganizations;
+    }
+    
+    // Submit transaction and wait for commit
+    let submitted: Uint8Array;
+    let commit: CommittedTransaction;
+    
+    if (proposalOptions.transientData || proposalOptions.endorsingOrganizations) {
+      // Use newProposal for advanced options
+      const proposal = contract.newProposal(transactionName, proposalOptions);
+      const transaction = await proposal.endorse(...args);
+      submitted = transaction.getResult();
+      commit = await transaction.submit();
+    } else {
+      // Use simple submit for basic transactions
+      submitted = await contract.submitTransaction(transactionName, ...args);
+      // For simple submit, we need to get the transaction ID differently
+      const result = this.parseResult(submitted);
+      return {
+        transactionId: 'tx_' + Date.now(), // Temporary ID since we can't get it from simple submit
+        payload: result,
+        blockNumber: BigInt(0) // Default value
+      };
+    }
 
     // Wait for transaction to be committed
     const status = await commit.getStatus();
@@ -133,22 +147,28 @@ export class TransactionHandler {
       throw new Error(`Transaction ${status.transactionId} failed to commit with status ${status.code}`);
     }
 
-    // Get transaction result
-    const resultBytes = transaction.getResult();
-    const resultString = this.textDecoder.decode(resultBytes);
-    
-    let payload: any;
-    try {
-      payload = JSON.parse(resultString);
-    } catch {
-      payload = resultString;
-    }
+    // Parse result
+    const payload = this.parseResult(submitted);
 
     return {
       transactionId: status.transactionId,
       payload,
-      blockNumber: status.blockNumber!
+      blockNumber: status.blockNumber
     };
+  }
+
+  private parseResult(resultBytes: Uint8Array): any {
+    if (!resultBytes || resultBytes.length === 0) {
+      return null;
+    }
+    
+    const resultString = this.textDecoder.decode(resultBytes);
+    
+    try {
+      return JSON.parse(resultString);
+    } catch {
+      return resultString;
+    }
   }
 
   private shouldRetry(error: any): boolean {
@@ -159,14 +179,16 @@ export class TransactionHandler {
     // Retry on network errors
     if (errorMessage.includes('UNAVAILABLE') || 
         errorMessage.includes('DEADLINE_EXCEEDED') ||
-        errorMessage.includes('ECONNREFUSED')) {
+        errorMessage.includes('ECONNREFUSED') ||
+        errorMessage.includes('ETIMEDOUT')) {
       return true;
     }
 
     // Don't retry on logical errors
     if (errorMessage.includes('ENDORSEMENT_POLICY_FAILURE') ||
         errorMessage.includes('MVCC_READ_CONFLICT') ||
-        errorMessage.includes('INVALID_TRANSACTION')) {
+        errorMessage.includes('INVALID_TRANSACTION') ||
+        errorMessage.includes('DUPLICATE_TXID')) {
       return false;
     }
 
@@ -212,8 +234,8 @@ export class TransactionHandler {
     return results;
   }
 
-  public createTransientData(data: Record<string, any>): TransientMap {
-    const transientData: TransientMap = {};
+  public createTransientData(data: Record<string, any>): Record<string, Buffer> {
+    const transientData: Record<string, Buffer> = {};
     
     for (const [key, value] of Object.entries(data)) {
       const valueString = typeof value === 'string' ? value : JSON.stringify(value);
@@ -266,5 +288,13 @@ export class TransactionHandler {
     }
 
     return result.result;
+  }
+
+  // Helper to create arguments array from object
+  public createArguments(data: any): string[] {
+    if (Array.isArray(data)) {
+      return data.map(item => typeof item === 'string' ? item : JSON.stringify(item));
+    }
+    return [typeof data === 'string' ? data : JSON.stringify(data)];
   }
 }

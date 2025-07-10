@@ -1,12 +1,12 @@
+// backend/gateway/src/config/sdk-config.ts
 // SDK Configuration Manager for Hyperledger Fabric
-// Handles dynamic configuration loading based on brand settings
+// Updated for fabric-gateway 1.x API
 
 import * as yaml from 'js-yaml';
 import * as fs from 'fs';
 import * as path from 'path';
-import { Gateway, GatewayOptions, Wallets, X509Identity } from '@hyperledger/fabric-gateway';
-import * as grpc from '@grpc/grpc-js';
 import * as crypto from 'crypto';
+import { Identity } from '@hyperledger/fabric-gateway';
 
 export interface BrandConfig {
   brand: {
@@ -17,6 +17,7 @@ export interface BrandConfig {
   network: {
     organizations: Organization[];
     channels: Channel[];
+    orderers?: Orderer[];
   };
   consensus: ConsensusConfig;
   security: SecurityConfig;
@@ -35,6 +36,13 @@ export interface Peer {
   port: number;
   chaincodePort: number;
   operationsPort: number;
+}
+
+export interface Orderer {
+  name: string;
+  port: number;
+  operationsPort: number;
+  organization: string;
 }
 
 export interface Channel {
@@ -72,16 +80,24 @@ export interface SecurityConfig {
   };
 }
 
+export interface CryptoMaterial {
+  credentials: {
+    certificate: string;
+    privateKey: string;
+  };
+  mspId: string;
+}
+
 export class SDKConfigManager {
-  private brandConfig: BrandConfig;
+  private brandConfig!: BrandConfig;
   private configPath: string;
   private cryptoPath: string;
-  private walletPath: string;
+  private identityPath: string;
 
   constructor(brandId: string) {
     this.configPath = path.join(__dirname, '../../../../config/brands', brandId);
     this.cryptoPath = path.join(__dirname, '../../../../network/organizations');
-    this.walletPath = path.join(__dirname, '../../wallets', brandId);
+    this.identityPath = path.join(__dirname, '../../identities', brandId);
     this.loadBrandConfig();
   }
 
@@ -103,14 +119,29 @@ export class SDKConfigManager {
     return this.brandConfig.network.organizations.find(org => org.id === orgId);
   }
 
-  public getConnectionProfile(orgId: string): any {
-    const profilePath = path.join(this.configPath, `connection-${orgId}.json`);
-    if (!fs.existsSync(profilePath)) {
-      throw new Error(`Connection profile not found for organization: ${orgId}`);
+  public getPeerEndpoint(orgId: string, peerIndex: number = 0): string {
+    const org = this.getOrganization(orgId);
+    if (!org || !org.peers[peerIndex]) {
+      throw new Error(`Peer not found for organization: ${orgId}`);
     }
+    return `localhost:${org.peers[peerIndex].port}`;
+  }
 
-    const profileContent = fs.readFileSync(profilePath, 'utf8');
-    return JSON.parse(profileContent);
+  public getPeerHostname(orgId: string, peerIndex: number = 0): string {
+    const org = this.getOrganization(orgId);
+    if (!org || !org.peers[peerIndex]) {
+      throw new Error(`Peer not found for organization: ${orgId}`);
+    }
+    const peer = org.peers[peerIndex];
+    return `${peer.name}.${orgId}.${this.brandConfig.brand.id}.luxury`;
+  }
+
+  public getMspId(orgId: string): string {
+    const org = this.getOrganization(orgId);
+    if (!org) {
+      throw new Error(`Organization not found: ${orgId}`);
+    }
+    return org.mspId;
   }
 
   public getCryptoPath(orgId: string, type: 'peer' | 'orderer' = 'peer'): string {
@@ -119,19 +150,68 @@ export class SDKConfigManager {
     return path.join(this.cryptoPath, orgType, domain);
   }
 
-  public getWalletPath(orgId: string): string {
-    return path.join(this.walletPath, orgId);
+  public getIdentityPath(orgId: string): string {
+    return path.join(this.identityPath, orgId);
   }
 
-  public async createWallet(orgId: string): Promise<any> {
-    const walletPath = this.getWalletPath(orgId);
+  // Load crypto materials for a user
+  public loadIdentity(orgId: string, userId: string): CryptoMaterial {
+    const cryptoPath = this.getCryptoPath(orgId);
+    const userPath = path.join(cryptoPath, 'users', `${userId}@${orgId}.${this.brandConfig.brand.id}.luxury`);
     
-    // Create wallet directory if it doesn't exist
-    if (!fs.existsSync(walletPath)) {
-      fs.mkdirSync(walletPath, { recursive: true });
+    const certPath = path.join(userPath, 'msp', 'signcerts', `${userId}@${orgId}.${this.brandConfig.brand.id}.luxury-cert.pem`);
+    const keyPath = path.join(userPath, 'msp', 'keystore');
+    
+    if (!fs.existsSync(certPath)) {
+      throw new Error(`Certificate not found for user ${userId}@${orgId}`);
     }
+    
+    // Find the private key
+    const keyFiles = fs.readdirSync(keyPath);
+    const privateKeyFile = keyFiles.find(f => f.endsWith('_sk'));
+    
+    if (!privateKeyFile) {
+      throw new Error(`Private key not found for user ${userId}@${orgId}`);
+    }
+    
+    const certificate = fs.readFileSync(certPath, 'utf8');
+    const privateKey = fs.readFileSync(path.join(keyPath, privateKeyFile), 'utf8');
+    
+    return {
+      credentials: {
+        certificate,
+        privateKey
+      },
+      mspId: this.getMspId(orgId)
+    };
+  }
 
-    return await Wallets.newFileSystemWallet(walletPath);
+  // Load admin identity
+  public loadAdminIdentity(orgId: string): CryptoMaterial {
+    return this.loadIdentity(orgId, 'Admin');
+  }
+
+  // Get TLS certificate for peer
+  public getTlsCertificate(orgId: string, peerIndex: number = 0): Buffer {
+    const org = this.getOrganization(orgId);
+    if (!org || !org.peers[peerIndex]) {
+      throw new Error(`Peer not found for organization: ${orgId}`);
+    }
+    
+    const peer = org.peers[peerIndex];
+    const tlsCertPath = path.join(
+      this.getCryptoPath(orgId),
+      'peers',
+      `${peer.name}.${orgId}.${this.brandConfig.brand.id}.luxury`,
+      'tls',
+      'ca.crt'
+    );
+    
+    if (!fs.existsSync(tlsCertPath)) {
+      throw new Error(`TLS certificate not found: ${tlsCertPath}`);
+    }
+    
+    return fs.readFileSync(tlsCertPath);
   }
 
   public getChannelName(): string {
@@ -144,5 +224,39 @@ export class SDKConfigManager {
 
   public getSecurityConfig(): SecurityConfig {
     return this.brandConfig.security;
+  }
+
+  // Create a Fabric Identity object for the gateway
+  public createIdentity(orgId: string, userId: string): Identity {
+    const cryptoMaterial = this.loadIdentity(orgId, userId);
+    
+    // Convert certificate to Uint8Array
+    const encoder = new TextEncoder();
+    const certBytes = encoder.encode(cryptoMaterial.credentials.certificate);
+    
+    return {
+      credentials: certBytes,
+      mspId: cryptoMaterial.mspId,
+    };
+  }
+
+  // Get all peer endpoints for an organization
+  public getAllPeerEndpoints(orgId: string): string[] {
+    const org = this.getOrganization(orgId);
+    if (!org) {
+      throw new Error(`Organization not found: ${orgId}`);
+    }
+    
+    return org.peers.map(peer => `localhost:${peer.port}`);
+  }
+
+  // Get orderer endpoints
+  public getOrdererEndpoints(): string[] {
+    if (!this.brandConfig.network.orderers) {
+      // Default orderer configuration
+      return ['localhost:7050', 'localhost:8050', 'localhost:9050'];
+    }
+    
+    return this.brandConfig.network.orderers.map(orderer => `localhost:${orderer.port}`);
   }
 }

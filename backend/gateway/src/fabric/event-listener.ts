@@ -1,20 +1,40 @@
+// backend/gateway/src/fabric/event-listener.ts
 // Event Listener Manager for Hyperledger Fabric
-// Handles blockchain events and notifications
+// Updated for fabric-gateway 1.x API
 
-import { Network, Contract, ContractListener, ContractEvent, Checkpointer } from '@hyperledger/fabric-gateway';
+import { Network, Contract, Checkpointer, CloseableAsyncIterable } from '@hyperledger/fabric-gateway';
 import { EventEmitter } from 'events';
 
 export interface EventListenerOptions {
-  checkpointer?: Checkpointer;
-  replay?: boolean;
   startBlock?: bigint;
+  checkpointer?: Checkpointer;
 }
 
-export type EventHandler = (event: ContractEvent) => Promise<void> | void;
+export interface ChaincodeEvent {
+  chaincodeName: string;
+  eventName: string;
+  transactionId: string;
+  blockNumber: bigint;
+  payload: Uint8Array;
+}
+
+export interface BlockEvent {
+  blockNumber: bigint;
+  blockData: Uint8Array;
+}
+
+export type EventHandler = (event: ChaincodeEvent) => Promise<void> | void;
+export type BlockHandler = (event: BlockEvent) => Promise<void> | void;
+
+interface ActiveListener {
+  iterator: CloseableAsyncIterable<any>;
+  handlers: Set<EventHandler | BlockHandler>;
+  active: boolean;
+}
 
 export class EventListenerManager extends EventEmitter {
-  private listeners: Map<string, ContractListener> = new Map();
-  private handlers: Map<string, Set<EventHandler>> = new Map();
+  private activeListeners: Map<string, ActiveListener> = new Map();
+  private readonly textDecoder = new TextDecoder();
 
   public async startContractEventListener(
     contract: Contract,
@@ -24,26 +44,36 @@ export class EventListenerManager extends EventEmitter {
   ): Promise<string> {
     const listenerId = this.generateListenerId(contract.getChaincodeName(), eventName);
 
-    // Add handler to the set
-    if (!this.handlers.has(listenerId)) {
-      this.handlers.set(listenerId, new Set());
-    }
-    this.handlers.get(listenerId)!.add(handler);
+    // Check if listener already exists
+    let listener = this.activeListeners.get(listenerId);
+    
+    if (!listener) {
+      // Create new event iterator
+      const eventOptions: any = {};
+      if (options.startBlock !== undefined) {
+        eventOptions.startBlock = options.startBlock;
+      }
+      if (options.checkpointer) {
+        eventOptions.checkpointer = options.checkpointer;
+      }
 
-    // Create listener if it doesn't exist
-    if (!this.listeners.has(listenerId)) {
-      const listener = await contract.events.addContractListener(
-        async (event: ContractEvent) => {
-          await this.handleEvent(listenerId, event);
-        },
-        {
-          ...options,
-          eventName
-        }
-      );
-
-      this.listeners.set(listenerId, listener);
+      const iterator = await contract.newChaincodeEventsRequest(eventName, eventOptions);
+      
+      listener = {
+        iterator,
+        handlers: new Set([handler]),
+        active: true
+      };
+      
+      this.activeListeners.set(listenerId, listener);
+      
+      // Start processing events
+      this.processEvents(listenerId, iterator, 'chaincode');
+      
       this.emit('listenerStarted', { listenerId, eventName });
+    } else {
+      // Add handler to existing listener
+      listener.handlers.add(handler);
     }
 
     return listenerId;
@@ -51,92 +81,159 @@ export class EventListenerManager extends EventEmitter {
 
   public async startBlockEventListener(
     network: Network,
-    handler: (blockNumber: bigint) => Promise<void> | void,
+    handler: BlockHandler,
     options: { startBlock?: bigint } = {}
   ): Promise<string> {
     const listenerId = this.generateListenerId('network', 'block');
 
-    const listener = await network.events.addBlockListener(
-      async (block) => {
-        await handler(block.blockNumber);
-        this.emit('blockEvent', { blockNumber: block.blockNumber });
-      },
-      options
-    );
-
-    this.listeners.set(listenerId, listener as any);
-    this.emit('listenerStarted', { listenerId, type: 'block' });
-
-    return listenerId;
-  }
-
-  public async startChaincodeEventListener(
-    network: Network,
-    chaincodeName: string,
-    handler: EventHandler,
-    options: EventListenerOptions = {}
-  ): Promise<string> {
-    const listenerId = this.generateListenerId(chaincodeName, 'all');
-
-    // Add handler to the set
-    if (!this.handlers.has(listenerId)) {
-      this.handlers.set(listenerId, new Set());
-    }
-    this.handlers.get(listenerId)!.add(handler);
-
-    // Create listener if it doesn't exist
-    if (!this.listeners.has(listenerId)) {
-      const listener = await network.events.addContractListener(
-        async (event: ContractEvent) => {
-          await this.handleEvent(listenerId, event);
-        },
-        {
-          ...options,
-          contractName: chaincodeName
-        }
-      );
-
-      this.listeners.set(listenerId, listener);
-      this.emit('listenerStarted', { listenerId, chaincodeName });
-    }
-
-    return listenerId;
-  }
-
-  private async handleEvent(listenerId: string, event: ContractEvent): Promise<void> {
-    const handlers = this.handlers.get(listenerId);
-    if (!handlers) return;
-
-    // Parse event payload
-    const eventData = this.parseEventPayload(event.payload);
-
-    // Emit for general listeners
-    this.emit('contractEvent', {
-      chaincodeName: event.chaincodeName,
-      eventName: event.eventName,
-      transactionId: event.transactionId,
-      blockNumber: event.blockNumber,
-      data: eventData
-    });
-
-    // Call specific handlers
-    for (const handler of handlers) {
-      try {
-        await handler(event);
-      } catch (error) {
-        this.emit('error', {
-          listenerId,
-          event,
-          error
-        });
+    // Check if listener already exists
+    let listener = this.activeListeners.get(listenerId);
+    
+    if (!listener) {
+      // Create new block event iterator
+      const eventOptions: any = {};
+      if (options.startBlock !== undefined) {
+        eventOptions.startBlock = options.startBlock;
       }
+
+      const iterator = await network.newBlockEventsRequest(eventOptions);
+      
+      listener = {
+        iterator,
+        handlers: new Set([handler]),
+        active: true
+      };
+      
+      this.activeListeners.set(listenerId, listener);
+      
+      // Start processing blocks
+      this.processEvents(listenerId, iterator, 'block');
+      
+      this.emit('listenerStarted', { listenerId, type: 'block' });
+    } else {
+      // Add handler to existing listener
+      listener.handlers.add(handler);
+    }
+
+    return listenerId;
+  }
+
+  public async startFilteredBlockEventListener(
+    network: Network,
+    handler: (blockNumber: bigint) => Promise<void> | void,
+    options: { startBlock?: bigint } = {}
+  ): Promise<string> {
+    const listenerId = this.generateListenerId('network', 'filtered-block');
+
+    // Check if listener already exists
+    let listener = this.activeListeners.get(listenerId);
+    
+    if (!listener) {
+      // Create new filtered block event iterator
+      const eventOptions: any = {};
+      if (options.startBlock !== undefined) {
+        eventOptions.startBlock = options.startBlock;
+      }
+
+      const iterator = await network.newFilteredBlockEventsRequest(eventOptions);
+      
+      // Wrap handler to match BlockHandler signature
+      const wrappedHandler: BlockHandler = async (event) => {
+        await handler(event.blockNumber);
+      };
+      
+      listener = {
+        iterator,
+        handlers: new Set([wrappedHandler]),
+        active: true
+      };
+      
+      this.activeListeners.set(listenerId, listener);
+      
+      // Start processing filtered blocks
+      this.processEvents(listenerId, iterator, 'filtered-block');
+      
+      this.emit('listenerStarted', { listenerId, type: 'filtered-block' });
+    } else {
+      // Add handler to existing listener
+      const wrappedHandler: BlockHandler = async (event) => {
+        await handler(event.blockNumber);
+      };
+      listener.handlers.add(wrappedHandler);
+    }
+
+    return listenerId;
+  }
+
+  private async processEvents(
+    listenerId: string,
+    iterator: CloseableAsyncIterable<any>,
+    type: 'chaincode' | 'block' | 'filtered-block'
+  ): Promise<void> {
+    try {
+      for await (const event of iterator) {
+        const listener = this.activeListeners.get(listenerId);
+        if (!listener || !listener.active) {
+          break;
+        }
+
+        let processedEvent: ChaincodeEvent | BlockEvent;
+        
+        if (type === 'chaincode') {
+          // Process chaincode event
+          processedEvent = {
+            chaincodeName: event.chaincodeName,
+            eventName: event.eventName,
+            transactionId: event.transactionId,
+            blockNumber: event.blockNumber,
+            payload: event.payload
+          };
+          
+          // Emit for general listeners
+          this.emit('contractEvent', {
+            ...processedEvent,
+            data: this.parseEventPayload(event.payload)
+          });
+        } else if (type === 'block' || type === 'filtered-block') {
+          // Process block event
+          processedEvent = {
+            blockNumber: event.blockNumber,
+            blockData: event.blockData || new Uint8Array()
+          };
+          
+          // Emit for general listeners
+          this.emit('blockEvent', { blockNumber: event.blockNumber });
+        }
+
+        // Call specific handlers
+        for (const handler of listener.handlers) {
+          try {
+            await handler(processedEvent as any);
+          } catch (error) {
+            this.emit('error', {
+              listenerId,
+              event: processedEvent,
+              error
+            });
+          }
+        }
+      }
+    } catch (error) {
+      this.emit('error', {
+        listenerId,
+        error,
+        message: `Event processing failed for ${listenerId}`
+      });
+    } finally {
+      // Clean up when iterator ends
+      this.activeListeners.delete(listenerId);
+      this.emit('listenerStopped', { listenerId });
     }
   }
 
   private parseEventPayload(payload: Uint8Array): any {
     try {
-      const decoder = new TextDecoder();
-      const payloadString = decoder.decode(payload);
+      const payloadString = this.textDecoder.decode(payload);
       return JSON.parse(payloadString);
     } catch {
       return payload;
@@ -144,41 +241,59 @@ export class EventListenerManager extends EventEmitter {
   }
 
   public stopListener(listenerId: string): void {
-    const listener = this.listeners.get(listenerId);
+    const listener = this.activeListeners.get(listenerId);
     if (listener) {
-      listener.close();
-      this.listeners.delete(listenerId);
-      this.handlers.delete(listenerId);
+      listener.active = false;
+      listener.iterator.close();
+      this.activeListeners.delete(listenerId);
       this.emit('listenerStopped', { listenerId });
     }
   }
 
   public stopAllListeners(): void {
-    for (const [listenerId, listener] of this.listeners) {
-      listener.close();
+    for (const [listenerId, listener] of this.activeListeners) {
+      listener.active = false;
+      listener.iterator.close();
       this.emit('listenerStopped', { listenerId });
     }
-    this.listeners.clear();
-    this.handlers.clear();
+    this.activeListeners.clear();
   }
 
   public getActiveListeners(): string[] {
-    return Array.from(this.listeners.keys());
+    return Array.from(this.activeListeners.keys());
   }
 
   private generateListenerId(scope: string, event: string): string {
     return `${scope}:${event}:${Date.now()}`;
   }
 
-  public removeHandler(listenerId: string, handler: EventHandler): void {
-    const handlers = this.handlers.get(listenerId);
-    if (handlers) {
-      handlers.delete(handler);
+  public removeHandler(listenerId: string, handler: EventHandler | BlockHandler): void {
+    const listener = this.activeListeners.get(listenerId);
+    if (listener) {
+      listener.handlers.delete(handler);
       
       // If no more handlers, stop the listener
-      if (handlers.size === 0) {
+      if (listener.handlers.size === 0) {
         this.stopListener(listenerId);
       }
     }
+  }
+
+  // Helper method to create a checkpoint
+  public createCheckpointer(checkpointId: string): Checkpointer {
+    let blockNumber: bigint | undefined;
+    
+    return {
+      async checkpoint(event: { blockNumber: bigint }): Promise<void> {
+        blockNumber = event.blockNumber;
+        // In a real implementation, this would persist to a database
+        console.log(`Checkpoint ${checkpointId} at block ${blockNumber}`);
+      },
+      
+      async getBlockNumber(): Promise<bigint | undefined> {
+        // In a real implementation, this would read from a database
+        return blockNumber;
+      }
+    };
   }
 }

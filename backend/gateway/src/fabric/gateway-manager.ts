@@ -1,11 +1,11 @@
+// backend/gateway/src/fabric/gateway-manager.ts
 // Gateway Connection Manager for Hyperledger Fabric
-// Manages connections to the blockchain network
+// Updated for fabric-gateway 1.x API
 
-import { connect, Gateway, GatewayOptions, Network, Contract, Identity, Signer, signers } from '@hyperledger/fabric-gateway';
+import { connect, Gateway, Network, Contract, Identity, Signer } from '@hyperledger/fabric-gateway';
 import * as grpc from '@grpc/grpc-js';
-import * as crypto from 'crypto';
 import { SDKConfigManager } from '../config/sdk-config';
-import { WalletManager } from './wallet-manager';
+import { IdentityManager } from './identity-manager';
 
 export interface ConnectionOptions {
   orgId: string;
@@ -18,13 +18,13 @@ export interface ConnectionOptions {
 
 export class GatewayManager {
   private configManager: SDKConfigManager;
-  private walletManager: WalletManager;
+  private identityManager: IdentityManager;
   private gateways: Map<string, Gateway> = new Map();
   private grpcClients: Map<string, grpc.Client> = new Map();
 
-  constructor(configManager: SDKConfigManager, walletManager: WalletManager) {
+  constructor(configManager: SDKConfigManager, identityManager: IdentityManager) {
     this.configManager = configManager;
-    this.walletManager = walletManager;
+    this.identityManager = identityManager;
   }
 
   public async connect(options: ConnectionOptions): Promise<Gateway> {
@@ -35,51 +35,47 @@ export class GatewayManager {
       return this.gateways.get(connectionKey)!;
     }
 
-    // Get identity from wallet
-    const identity = await this.walletManager.getIdentity(options.orgId, options.userId);
-    if (!identity) {
-      throw new Error(`Identity not found: ${options.userId}`);
+    // Get identity and signer
+    const identityData = await this.identityManager.getIdentity(options.orgId, options.userId);
+    if (!identityData) {
+      throw new Error(`Identity not found: ${options.userId}@${options.orgId}`);
     }
 
     // Create gRPC client
     const client = await this.createGrpcClient(options.orgId);
     
-    // Create identity and signer
-    const credentials = identity.credentials;
-    const mspId = identity.mspId;
-    const gatewayIdentity: Identity = { mspId, credentials };
-    const signer = signers.newPrivateKeySigner(crypto.createPrivateKey(credentials.privateKey));
-
-    // Connect to gateway
+    // Connect to gateway with new API
     const gateway = connect({
       client,
-      identity: gatewayIdentity,
-      signer,
+      identity: identityData.identity,
+      signer: identityData.signer,
+      // Default timeouts
       evaluateOptions: () => {
         return {
-          deadline: Date.now() + 5000, // 5 seconds timeout
+          deadline: Date.now() + 5000 // 5 seconds
         };
       },
       endorseOptions: () => {
         return {
-          deadline: Date.now() + 15000, // 15 seconds timeout
+          deadline: Date.now() + 15000 // 15 seconds
         };
       },
       submitOptions: () => {
         return {
-          deadline: Date.now() + 30000, // 30 seconds timeout
+          deadline: Date.now() + 30000 // 30 seconds
         };
       },
       commitStatusOptions: () => {
         return {
-          deadline: Date.now() + 60000, // 60 seconds timeout
+          deadline: Date.now() + 60000 // 60 seconds
         };
-      },
+      }
     });
 
     this.gateways.set(connectionKey, gateway);
     this.grpcClients.set(connectionKey, client);
 
+    console.log(`Gateway connected for ${options.userId}@${options.orgId}`);
     return gateway;
   }
 
@@ -90,31 +86,30 @@ export class GatewayManager {
     }
 
     // Get peer endpoint
-    const peer = org.peers[0]; // Use first peer as gateway
-    const peerEndpoint = `localhost:${peer.port}`;
+    const peerEndpoint = this.configManager.getPeerEndpoint(orgId, 0);
+    const peerHostname = this.configManager.getPeerHostname(orgId, 0);
     
     // Get TLS certificate
-    const tlsCertPath = `${this.configManager.getCryptoPath(orgId)}/peers/peer0.${orgId}.${this.configManager.getBrandConfig().brand.id}.luxury/tls/ca.crt`;
-    const tlsRootCert = await this.getTlsCertificate(tlsCertPath);
+    const tlsRootCert = this.configManager.getTlsCertificate(orgId, 0);
 
     // Create gRPC credentials
     const tlsCredentials = grpc.credentials.createSsl(tlsRootCert);
     
-    // Create gRPC client
-    return new grpc.Client(peerEndpoint, tlsCredentials, {
-      'grpc.ssl_target_name_override': `peer0.${orgId}.${this.configManager.getBrandConfig().brand.id}.luxury`,
-    });
+    // Create gRPC client with options
+    const grpcOptions = {
+      'grpc.ssl_target_name_override': peerHostname,
+      'grpc.default_authority': peerHostname,
+      'grpc.keepalive_time_ms': 120000,
+      'grpc.http2.min_time_between_pings_ms': 120000,
+      'grpc.keepalive_timeout_ms': 20000,
+      'grpc.http2.max_pings_without_data': 0,
+      'grpc.keepalive_permit_without_calls': 1
+    };
+    
+    return new grpc.Client(peerEndpoint, tlsCredentials, grpcOptions);
   }
 
-  private async getTlsCertificate(certPath: string): Promise<Buffer> {
-    const fs = await import('fs');
-    return fs.readFileSync(certPath);
-  }
-
-  public async getNetwork(
-    gateway: Gateway,
-    channelName?: string
-  ): Promise<Network> {
+  public async getNetwork(gateway: Gateway, channelName?: string): Promise<Network> {
     const channel = channelName || this.configManager.getChannelName();
     return gateway.getNetwork(channel);
   }
@@ -143,6 +138,8 @@ export class GatewayManager {
       client.close();
       this.grpcClients.delete(connectionKey);
     }
+    
+    console.log(`Gateway disconnected for ${userId}@${orgId}`);
   }
 
   public async disconnectAll(): Promise<void> {
@@ -155,6 +152,8 @@ export class GatewayManager {
       client.close();
     }
     this.grpcClients.clear();
+    
+    console.log('All gateways disconnected');
   }
 
   public isConnected(orgId: string, userId: string): boolean {
@@ -164,5 +163,30 @@ export class GatewayManager {
 
   public getActiveConnections(): string[] {
     return Array.from(this.gateways.keys());
+  }
+
+  // Helper method to get a connected gateway
+  public async getGateway(orgId: string, userId: string): Promise<Gateway> {
+    const connectionKey = `${orgId}-${userId}`;
+    let gateway = this.gateways.get(connectionKey);
+    
+    if (!gateway) {
+      gateway = await this.connect({ orgId, userId });
+    }
+    
+    return gateway;
+  }
+
+  // Helper method to quickly get a contract
+  public async getContractFromGateway(
+    orgId: string,
+    userId: string,
+    channelName: string,
+    chaincodeName: string,
+    contractName?: string
+  ): Promise<Contract> {
+    const gateway = await this.getGateway(orgId, userId);
+    const network = await this.getNetwork(gateway, channelName);
+    return await this.getContract(network, chaincodeName, contractName);
   }
 }
