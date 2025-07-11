@@ -1,307 +1,146 @@
 // backend/gateway/src/fabric/event-listener.ts
 // Event Listener Manager for Hyperledger Fabric
-// Updated for fabric-gateway 1.x API
+// CORRECTED to use only @hyperledger/fabric-gateway types via inference
 
-import { Network, Contract, ChaincodeEventsRequest, BlockEventsRequest, FilteredBlockEventsRequest } from '@hyperledger/fabric-gateway';
+import {
+    Network,
+    ChaincodeEventsOptions,
+    BlockEventsOptions,
+    ChaincodeEvent,
+    CloseableAsyncIterable
+} from '@hyperledger/fabric-gateway';
 import { EventEmitter } from 'events';
 
 export interface EventListenerOptions {
   startBlock?: bigint;
-  // Checkpointer is optional and implementation-specific
-  checkpointer?: any;
 }
 
-export interface ChaincodeEvent {
-  chaincodeName: string;
-  eventName: string;
-  transactionId: string;
-  blockNumber: bigint;
-  payload: Uint8Array;
-}
+// --- FIX ---
+// Use TypeScript's inference to derive the block event types directly from the Network interface.
+// This avoids needing to import them from another package and is the correct modern approach.
 
-export interface BlockEvent {
-  blockNumber: bigint;
-  blockData: Uint8Array;
-}
+// 1. Helper type to extract the yielded type from any async iterable
+type EventFromAsyncIterable<T> = T extends AsyncIterable<infer E> ? E : never;
 
-export type EventHandler = (event: ChaincodeEvent) => Promise<void> | void;
-export type BlockHandler = (event: BlockEvent) => Promise<void> | void;
+// 2. Get the async iterable type returned by the network methods
+type BlockEventsIterator = Awaited<ReturnType<Network['getBlockEvents']>>;
+type FilteredBlockEventsIterator = Awaited<ReturnType<Network['getFilteredBlockEvents']>>;
+
+// 3. Extract the specific event type from each iterator
+export type BlockEvent = EventFromAsyncIterable<BlockEventsIterator>;
+export type FilteredBlockEvent = EventFromAsyncIterable<FilteredBlockEventsIterator>;
+
+// 4. Define the handler types using our new, correctly-inferred event types
+export type ChaincodeEventHandler = (event: ChaincodeEvent) => Promise<void> | void;
+export type BlockEventHandler = (event: BlockEvent) => Promise<void> | void;
+export type FilteredBlockEventHandler = (event: FilteredBlockEvent) => Promise<void> | void;
+// --- END FIX ---
 
 interface ActiveListener {
-  request: ChaincodeEventsRequest | BlockEventsRequest | FilteredBlockEventsRequest;
-  handlers: Set<EventHandler | BlockHandler>;
-  active: boolean;
-  cleanup?: () => void;
+  iterator: CloseableAsyncIterable<any>;
 }
 
 export class EventListenerManager extends EventEmitter {
   private activeListeners: Map<string, ActiveListener> = new Map();
-  private readonly textDecoder = new TextDecoder();
 
-  public async startContractEventListener(
-    contract: Contract,
+  public async addChaincodeListener(
+    network: Network,
+    chaincodeId: string,
     eventName: string,
-    handler: EventHandler,
-    options: EventListenerOptions = {}
+    handler: ChaincodeEventHandler,
+    options: ChaincodeEventsOptions = {}
   ): Promise<string> {
-    const listenerId = this.generateListenerId(contract.getChaincodeName(), eventName);
+    const listenerId = `chaincode:${chaincodeId}:${eventName}:${Date.now()}`;
+    const events = await network.getChaincodeEvents(chaincodeId, options);
+    this.activeListeners.set(listenerId, { iterator: events });
 
-    // Check if listener already exists
-    let listener = this.activeListeners.get(listenerId);
-    
-    if (!listener) {
-      // Create new event request
-      const request = contract.events(eventName);
-      
-      if (options.startBlock !== undefined) {
-        request.startBlock(options.startBlock);
-      }
-      // Note: Checkpointer implementation is custom and optional
-      // In production, you would implement persistent checkpoint storage
-
-      listener = {
-        request,
-        handlers: new Set([handler]),
-        active: true
-      };
-      
-      this.activeListeners.set(listenerId, listener);
-      
-      // Start processing events
-      this.processEvents(listenerId, request, 'chaincode');
-      
-      this.emit('listenerStarted', { listenerId, eventName });
-    } else {
-      // Add handler to existing listener
-      listener.handlers.add(handler);
-    }
+    console.log(`Started chaincode event listener: ${listenerId}`);
+    this.processEvents(listenerId, events, handler).catch(err => {
+        this.emit('error', { listenerId, error: err });
+    });
 
     return listenerId;
   }
 
-  public async startBlockEventListener(
-    network: Network,
-    handler: BlockHandler,
-    options: { startBlock?: bigint } = {}
+  public async addBlockListener(
+      network: Network,
+      channelName: string,
+      handler: BlockEventHandler,
+      options: BlockEventsOptions = {}
   ): Promise<string> {
-    const listenerId = this.generateListenerId('network', 'block');
+    const listenerId = `block:${channelName}:${Date.now()}`;
+    const events = await network.getBlockEvents(options);
+    this.activeListeners.set(listenerId, { iterator: events });
 
-    // Check if listener already exists
-    let listener = this.activeListeners.get(listenerId);
-    
-    if (!listener) {
-      // Create new block event request
-      const request = network.blockEvents();
-      
-      if (options.startBlock !== undefined) {
-        request.startBlock(options.startBlock);
-      }
-
-      listener = {
-        request,
-        handlers: new Set([handler]),
-        active: true
-      };
-      
-      this.activeListeners.set(listenerId, listener);
-      
-      // Start processing blocks
-      this.processEvents(listenerId, request, 'block');
-      
-      this.emit('listenerStarted', { listenerId, type: 'block' });
-    } else {
-      // Add handler to existing listener
-      listener.handlers.add(handler);
-    }
+    console.log(`Started block event listener: ${listenerId}`);
+    this.processEvents(listenerId, events, handler).catch(err => {
+        this.emit('error', { listenerId, error: err });
+    });
 
     return listenerId;
   }
 
-  public async startFilteredBlockEventListener(
-    network: Network,
-    handler: (blockNumber: bigint) => Promise<void> | void,
-    options: { startBlock?: bigint } = {}
+  public async addFilteredBlockListener(
+      network: Network,
+      channelName: string,
+      handler: FilteredBlockEventHandler,
+      options: BlockEventsOptions = {}
   ): Promise<string> {
-    const listenerId = this.generateListenerId('network', 'filtered-block');
+    const listenerId = `filtered-block:${channelName}:${Date.now()}`;
+    const events = await network.getFilteredBlockEvents(options);
+    this.activeListeners.set(listenerId, { iterator: events });
 
-    // Check if listener already exists
-    let listener = this.activeListeners.get(listenerId);
-    
-    if (!listener) {
-      // Create new filtered block event request
-      const request = network.filteredBlockEvents();
-      
-      if (options.startBlock !== undefined) {
-        request.startBlock(options.startBlock);
-      }
-
-      // Wrap handler to match BlockHandler signature
-      const wrappedHandler: BlockHandler = async (event) => {
-        await handler(event.blockNumber);
-      };
-      
-      listener = {
-        request,
-        handlers: new Set([wrappedHandler]),
-        active: true
-      };
-      
-      this.activeListeners.set(listenerId, listener);
-      
-      // Start processing filtered blocks
-      this.processEvents(listenerId, request, 'filtered-block');
-      
-      this.emit('listenerStarted', { listenerId, type: 'filtered-block' });
-    } else {
-      // Add handler to existing listener
-      const wrappedHandler: BlockHandler = async (event) => {
-        await handler(event.blockNumber);
-      };
-      listener.handlers.add(wrappedHandler);
-    }
+    console.log(`Started filtered block event listener: ${listenerId}`);
+    this.processEvents(listenerId, events, handler).catch(err => {
+        this.emit('error', { listenerId, error: err });
+    });
 
     return listenerId;
   }
 
-  private async processEvents(
-    listenerId: string,
-    request: ChaincodeEventsRequest | BlockEventsRequest | FilteredBlockEventsRequest,
-    type: 'chaincode' | 'block' | 'filtered-block'
+  private async processEvents<T>(
+      listenerId: string,
+      iterator: CloseableAsyncIterable<T>,
+      handler: (event: T) => Promise<void> | void
   ): Promise<void> {
     try {
-      const events = request.getEvents();
-      
-      for await (const event of events) {
-        const listener = this.activeListeners.get(listenerId);
-        if (!listener || !listener.active) {
-          break;
-        }
-
-        let processedEvent: ChaincodeEvent | BlockEvent | undefined;
-        
-        if (type === 'chaincode') {
-          // Process chaincode event
-          processedEvent = {
-            chaincodeName: event.chaincodeName,
-            eventName: event.eventName,
-            transactionId: event.transactionId,
-            blockNumber: event.blockNumber,
-            payload: event.payload
-          };
-          
-          // Emit for general listeners
-          this.emit('contractEvent', {
-            ...processedEvent,
-            data: this.parseEventPayload(event.payload)
-          });
-        } else if (type === 'block' || type === 'filtered-block') {
-          // Process block event
-          processedEvent = {
-            blockNumber: event.blockNumber,
-            blockData: event.blockData || new Uint8Array()
-          };
-          
-          // Emit for general listeners
-          this.emit('blockEvent', { blockNumber: event.blockNumber });
-        }
-
-        // Call specific handlers
-        if (processedEvent) {
-          for (const handler of listener.handlers) {
-            try {
-              await handler(processedEvent as any);
-            } catch (error) {
-              this.emit('error', {
-                listenerId,
-                event: processedEvent,
-                error
-              });
+        for await (const event of iterator) {
+            if (!this.activeListeners.has(listenerId)) {
+                break;
             }
-          }
+            try {
+                await handler(event);
+            } catch (err) {
+                this.emit('error', { listenerId, error: err, event });
+            }
         }
-      }
     } catch (error) {
-      this.emit('error', {
-        listenerId,
-        error,
-        message: `Event processing failed for ${listenerId}`
-      });
+        if (this.activeListeners.has(listenerId)) {
+           this.emit('error', { listenerId, error });
+        }
     } finally {
-      // Clean up when iterator ends
-      this.activeListeners.delete(listenerId);
-      this.emit('listenerStopped', { listenerId });
-    }
-  }
-
-  private parseEventPayload(payload: Uint8Array): any {
-    try {
-      const payloadString = this.textDecoder.decode(payload);
-      return JSON.parse(payloadString);
-    } catch {
-      return payload;
+        this.stopListener(listenerId);
     }
   }
 
   public stopListener(listenerId: string): void {
     const listener = this.activeListeners.get(listenerId);
     if (listener) {
-      listener.active = false;
-      // Close the event stream
-      if (listener.cleanup) {
-        listener.cleanup();
-      }
+      listener.iterator.close();
       this.activeListeners.delete(listenerId);
       this.emit('listenerStopped', { listenerId });
+      console.log(`Stopped event listener: ${listenerId}`);
     }
   }
 
   public stopAllListeners(): void {
-    for (const [listenerId, listener] of this.activeListeners) {
-      listener.active = false;
-      if (listener.cleanup) {
-        listener.cleanup();
-      }
-      this.emit('listenerStopped', { listenerId });
+    for (const listenerId of this.activeListeners.keys()) {
+      this.stopListener(listenerId);
     }
-    this.activeListeners.clear();
+    console.log('Stopped all event listeners.');
   }
 
   public getActiveListeners(): string[] {
     return Array.from(this.activeListeners.keys());
-  }
-
-  private generateListenerId(scope: string, event: string): string {
-    return `${scope}:${event}:${Date.now()}`;
-  }
-
-  public removeHandler(listenerId: string, handler: EventHandler | BlockHandler): void {
-    const listener = this.activeListeners.get(listenerId);
-    if (listener) {
-      listener.handlers.delete(handler);
-      
-      // If no more handlers, stop the listener
-      if (listener.handlers.size === 0) {
-        this.stopListener(listenerId);
-      }
-    }
-  }
-
-  // Helper method to create a simple checkpointer
-  // Note: In fabric-gateway 1.x, checkpointers are optional and mainly used
-  // to track which blocks have been processed
-  public createCheckpointer(checkpointId: string): any {
-    let lastBlockNumber: bigint | undefined;
-    
-    // Return a simple object that can track block numbers
-    return {
-      id: checkpointId,
-      setBlockNumber(blockNumber: bigint): void {
-        lastBlockNumber = blockNumber;
-        console.log(`Checkpoint ${checkpointId} at block ${blockNumber}`);
-      },
-      getBlockNumber(): bigint | undefined {
-        return lastBlockNumber;
-      }
-    };
   }
 }

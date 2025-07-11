@@ -92,7 +92,7 @@ export class IdentityManager {
     }
 
     const cryptoPath = this.configManager.getCryptoPath(orgId);
-    const tlsCACertPath = path.join(cryptoPath, 'ca', 'ca.pem');
+    const tlsCACertPath = path.join(cryptoPath, 'ca', 'ca.pem'); //+ need to fix the path 
     
     if (!fs.existsSync(tlsCACertPath)) {
       throw new Error(`CA TLS certificate not found: ${tlsCACertPath}`);

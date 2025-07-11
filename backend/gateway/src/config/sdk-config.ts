@@ -95,8 +95,8 @@ export class SDKConfigManager {
   private identityPath: string;
 
   constructor(brandId: string) {
-    this.configPath = path.join(__dirname, '../../../../config/brands', brandId);
-    this.cryptoPath = path.join(__dirname, '../../../../network/organizations');
+    this.configPath = path.join(__dirname, '../../../../config/brands/example-brand');
+    this.cryptoPath = path.join(__dirname, '../../network/organizations');
     this.identityPath = path.join(__dirname, '../../identities', brandId);
     this.loadBrandConfig();
   }
