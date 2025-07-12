@@ -85,20 +85,31 @@ export class IdentityManager {
     return this.caClients.get(orgId)!;
   }
 
-  private getCAInfo(orgId: string): { url: string; caName: string; tlsCACert: string } {
+ // backend/gateway/src/fabric/identity-manager.ts
+// Fix for line 89
+
+private getCAInfo(orgId: string): { url: string; caName: string; tlsCACert: string } {
     const org = this.configManager.getOrganization(orgId);
     if (!org) {
       throw new Error(`Organization not found: ${orgId}`);
     }
 
     const cryptoPath = this.configManager.getCryptoPath(orgId);
-    const tlsCACertPath = path.join(cryptoPath, 'ca', 'ca.pem'); //+ need to fix the path 
+    // FIXED: Correct path to CA TLS certificate
+    const tlsCACertPath = path.join(cryptoPath, 'tlsca', `tlsca.${orgId}.${this.configManager.getBrandConfig().brand.id}.luxury-cert.pem`);
     
-    if (!fs.existsSync(tlsCACertPath)) {
-      throw new Error(`CA TLS certificate not found: ${tlsCACertPath}`);
+    // If tlsca cert doesn't exist, try the ca cert as fallback
+    let tlsCACert: string;
+    if (fs.existsSync(tlsCACertPath)) {
+      tlsCACert = fs.readFileSync(tlsCACertPath, 'utf8');
+    } else {
+      // Fallback to regular CA cert
+      const caCertPath = path.join(cryptoPath, 'ca', `ca.${orgId}.${this.configManager.getBrandConfig().brand.id}.luxury-cert.pem`);
+      if (!fs.existsSync(caCertPath)) {
+        throw new Error(`CA certificate not found: ${caCertPath}`);
+      }
+      tlsCACert = fs.readFileSync(caCertPath, 'utf8');
     }
-
-    const tlsCACert = fs.readFileSync(tlsCACertPath, 'utf8');
     
     // Determine CA port based on organization index
     const brandConfig = this.configManager.getBrandConfig();
