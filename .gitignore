@@ -3,6 +3,10 @@ backend/gateway/dist
 backend/gateway/network
 backend/gateway/logs
 backend/gateway/identities
+backend/consensus/node_modules
+backend/consensus/dist
 test-e2e
 generated-test
 .DS_Store
+/consensus/2check/node_modules
+/consensus/2check/dist

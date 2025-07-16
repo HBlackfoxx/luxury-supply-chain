@@ -1,5 +1,5 @@
-# Example configuration for a luxury handbag brand
-# This demonstrates how to configure the network for a specific luxury brand
+# config/brands/example-brand/network-config.yaml
+# Updated with 2-Check consensus configuration
 
 brand:
   id: "luxe-bags"
@@ -76,22 +76,50 @@ network:
           - "craftworkshop"
           - "luxuryretail"
 
+# NEW: 2-Check Consensus Configuration
 consensus:
-  type: "proof-of-luxury-authority"
+  type: "2-check"
+  
+  # Basic parameters
   parameters:
-    weights:
-      brand_owner: 40
-      supplier: 20
-      manufacturer: 20
-      retailer: 15
-      ai_advisory: 5
-    minParticipation: 70
-    reputation:
-      enabled: true
-      initialScore: 100
-    aiAdvisory:
-      enabled: true
-      confidenceThreshold: 0.85
+    require_dual_confirmation: true
+    auto_validate: true
+    enable_disputes: true
+    enable_emergency_stop: true
+    
+  # Timeout rules (hours)
+  timeouts:
+    default: 72
+    high_value: 24      # For items > $10,000
+    trusted_partner: 168 # 1 week for trust score > 100
+    
+  # Trust scoring
+  trust:
+    enabled: true
+    initial_score: 50
+    score_factors:
+      successful_transaction: +1
+      on_time_confirmation: +0.5
+      dispute_resolved: +2
+      timeout_caused: -2
+      false_claim: -10
+      
+  # Automation based on trust
+  automation:
+    - trust_level: 50
+      benefits: ["small_tx_auto_approve"]
+      threshold: 1000
+    - trust_level: 100
+      benefits: ["batch_operations", "extended_timeouts"]
+      threshold: 10000
+    - trust_level: 150
+      benefits: ["instant_approval", "api_access"]
+      threshold: 50000
+      
+  # Notification settings
+  notifications:
+    channels: ["email", "in_app"]
+    reminder_schedule: [24, 12, 1] # hours before timeout
 
 products:
   categories:
