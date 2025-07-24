@@ -10,3 +10,28 @@ generated-test
 .DS_Store
 /consensus/2check/node_modules
 /consensus/2check/dist
+
+# Project documentation
+Claude.md
+CLAUDE.md
+
+# Chaincode build artifacts
+chaincode/luxury-supply-chain/luxury-supply-chain
+chaincode/luxury-supply-chain/vendor/
+chaincode/**/*.tar.gz
+chaincode/**/*.zip
+
+# 2check-consensus build artifacts
+chaincode/2check-consensus/vendor/
+chaincode/2check-consensus/2check-consensus
+
+# Test scripts and generated files
+run-all-tests.sh
+setup-phase2.sh
+setup-phase3.sh
+test-config-generation.sh
+test-e2e-integration.sh
+test-network-lifecycle.sh
+test-phase2-integration.js
+test-sdk-compilation.sh
+validate-phase1.sh
