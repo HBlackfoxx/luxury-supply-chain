@@ -27,6 +27,9 @@
     "exceptions/**/*",
     "integration/**/*",
     "services/**/*",
+    "security/**/*",
+    "analytics/**/*",
+    "optimization/**/*",
     "index.ts"
   ],
   "exclude": [

@@ -81,7 +81,6 @@ EOF
 }
 
 # Function to generate orderer services - UPDATED FOR CHANNEL PARTICIPATION
-# Function to generate orderer services - UPDATED FOR CHANNEL PARTICIPATION
 generate_orderer_services() {
     local brand_config=$1
     
@@ -188,6 +187,8 @@ generate_peer_services() {
       - CORE_METRICS_PROVIDER=prometheus
       - CHAINCODE_AS_A_SERVICE_BUILDER_CONFIG={"peername":"$peer_name.$org_id"}
       - CORE_CHAINCODE_EXECUTETIMEOUT=300s
+      - CORE_VM_ENDPOINT=unix:///host/var/run/docker.sock
+      - CORE_VM_DOCKER_HOSTCONFIG_NETWORKMODE=\${NETWORK_NAME}
       - CORE_PEER_TLS_ENABLED=true
       - CORE_PEER_TLS_CERT_FILE=/etc/hyperledger/fabric/tls/server.crt
       - CORE_PEER_TLS_KEY_FILE=/etc/hyperledger/fabric/tls/server.key

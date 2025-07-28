@@ -6,6 +6,7 @@ import { TimeoutHandler } from '../core/timeout/timeout-handler';
 import { TrustScoringSystem } from '../core/trust/trust-scoring-system';
 import { DisputeResolution } from '../exceptions/disputes/dispute-resolution';
 import { Transaction, TransactionState, TransactionParty } from '../core/types';
+import { mapTsStateToGo, mapGoStateToTs, trustScoreConverter, timeConverter } from './state-mapping';
 
 export interface FabricConfig {
   channelName: string;
@@ -194,17 +195,17 @@ export class FabricIntegration extends EventEmitter {
       }
 
       // Submit to chaincode
-      const result = await this.invokeChaincode('submitTransaction', {
-        transactionId: transaction.id,
+      const result = await this.invokeChaincode('SubmitTransaction', {
+        id: transaction.id,
         sender: transaction.sender,
         receiver: transaction.receiver,
-        itemType: transaction.itemType,
-        timestamp: transaction.timestamp.toISOString(),
-        metadata: transaction.metadata
+        itemType: transaction.itemType || 'product_transfer',
+        itemID: transaction.itemId,
+        metadata: JSON.stringify(transaction.metadata || {})
       });
 
-      // Update local state
-      await this.stateManager.updateState(transaction.id, TransactionState.INITIATED);
+      // Update local state (TypeScript uses CREATED, which maps to Go's INITIATED)
+      await this.stateManager.updateState(transaction.id, TransactionState.CREATED);
       
       // Start timeout monitoring
       await this.timeoutHandler.startTimeout(transaction.id);
@@ -219,10 +220,9 @@ export class FabricIntegration extends EventEmitter {
   public async confirmSent(transactionId: string, sender: string): Promise<void> {
     try {
       // Submit confirmation to chaincode
-      await this.invokeChaincode('confirmSent', {
+      await this.invokeChaincode('ConfirmSent', {
         transactionId,
-        sender,
-        timestamp: new Date().toISOString()
+        sender
       });
 
       // Update local state
@@ -240,10 +240,9 @@ export class FabricIntegration extends EventEmitter {
   public async confirmReceived(transactionId: string, receiver: string): Promise<void> {
     try {
       // Submit confirmation to chaincode
-      await this.invokeChaincode('confirmReceived', {
+      await this.invokeChaincode('ConfirmReceived', {
         transactionId,
-        receiver,
-        timestamp: new Date().toISOString()
+        receiver
       });
 
       // Update local state
@@ -260,8 +259,10 @@ export class FabricIntegration extends EventEmitter {
         await this.stateManager.updateState(transactionId, TransactionState.VALIDATED);
         
         // Update trust scores positively
-        await this.trustSystem.updateScore(transaction.sender, 0.01, 'successful_transaction');
-        await this.trustSystem.updateScore(transaction.receiver, 0.01, 'successful_transaction');
+        // Update trust scores - TypeScript uses 0-200 scale
+        const tsScoreIncrease = trustScoreConverter.goToTs(0.01); // Convert Go's 0.01 to TypeScript scale
+        await this.trustSystem.updateScore(transaction.sender, tsScoreIncrease, 'successful_transaction');
+        await this.trustSystem.updateScore(transaction.receiver, tsScoreIncrease, 'successful_transaction');
       }
 
     } catch (error) {
@@ -270,16 +271,47 @@ export class FabricIntegration extends EventEmitter {
     }
   }
 
+  // Dispute methods
+  public async raiseDispute(transactionId: string, initiator: string, reason: string): Promise<void> {
+    try {
+      await this.invokeChaincode('RaiseDispute', {
+        transactionId,
+        initiator,
+        reason
+      });
+
+      // Update local state
+      await this.stateManager.updateState(transactionId, TransactionState.DISPUTED);
+    } catch (error) {
+      console.error('Failed to raise dispute:', error);
+      throw error;
+    }
+  }
+
+  public async submitEvidence(transactionId: string, evidenceType: string, submittedBy: string, hash: string): Promise<void> {
+    try {
+      await this.invokeChaincode('SubmitEvidence', {
+        transactionId,
+        evidenceType,
+        submittedBy,
+        hash
+      });
+    } catch (error) {
+      console.error('Failed to submit evidence:', error);
+      throw error;
+    }
+  }
+
   // Query methods
   public async getTransaction(transactionId: string): Promise<Transaction> {
     try {
-      const result = await this.queryChaincode('getTransaction', { transactionId });
+      const result = await this.queryChaincode('GetTransaction', { transactionId });
       
       return {
         id: result.transactionId,
         sender: result.sender,
         receiver: result.receiver,
-        state: result.state as TransactionState,
+        state: mapGoStateToTs(result.state), // Convert Go state to TypeScript state
         timestamp: new Date(result.timestamp),
         itemType: result.itemType,
         itemId: result.itemId || '',
@@ -298,10 +330,24 @@ export class FabricIntegration extends EventEmitter {
 
   public async getTransactionHistory(transactionId: string): Promise<any[]> {
     try {
-      const result = await this.queryChaincode('getTransactionHistory', { transactionId });
-      return result.history;
+      const result = await this.queryChaincode('GetTransactionHistory', { transactionId });
+      return result.history || [];
     } catch (error) {
       console.error('Failed to get transaction history:', error);
+      throw error;
+    }
+  }
+
+  public async getTrustScore(partyID: string): Promise<any> {
+    try {
+      const result = await this.queryChaincode('GetTrustScore', { partyID });
+      // Convert Go trust score (0-1) to TypeScript scale (0-200)
+      if (result && typeof result.score === 'number') {
+        result.score = trustScoreConverter.goToTs(result.score);
+      }
+      return result;
+    } catch (error) {
+      console.error('Failed to get trust score:', error);
       throw error;
     }
   }
@@ -379,7 +425,7 @@ export class FabricIntegration extends EventEmitter {
       success: true,
       ...args,
       // Mock data
-      state: TransactionState.INITIATED,
+      state: 'INITIATED', // Return Go state format for mock
       timestamp: new Date().toISOString(),
       history: []
     };

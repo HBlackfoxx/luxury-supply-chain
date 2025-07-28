@@ -66,6 +66,21 @@ export class ConsensusAPI {
     // Statistics and monitoring
     this.router.get('/statistics', this.getStatistics.bind(this));
     this.router.get('/health', this.healthCheck.bind(this));
+    
+    // Emergency stop routes
+    this.router.post('/emergency/stop', this.triggerEmergencyStop.bind(this));
+    this.router.post('/emergency/resume', this.resumeEmergencyStop.bind(this));
+    this.router.get('/emergency/status', this.getEmergencyStatus.bind(this));
+    
+    // Compensation routes
+    this.router.post('/compensation/approve/:transactionId', this.approveCompensation.bind(this));
+    this.router.post('/compensation/reject/:transactionId', this.rejectCompensation.bind(this));
+    this.router.get('/compensation/pending', this.getPendingCompensations.bind(this));
+    
+    // Analytics routes
+    this.router.post('/analytics/report', this.getPerformanceReport.bind(this));
+    this.router.get('/analytics/party/:partyId', this.getPartyAnalytics.bind(this));
+    this.router.get('/analytics/insights', this.getInsights.bind(this));
   }
 
   /**
@@ -140,17 +155,13 @@ export class ConsensusAPI {
     try {
       const { id } = req.params;
       
-      // This would normally query from blockchain
-      // For demo, we'll return mock data
+      const report = await req.consensusSystem!.getTransactionReport(id);
+      
       res.json({
         id,
-        state: TransactionState.SENT,
-        sender: 'supplier1',
-        receiver: 'manufacturer1',
-        itemId: 'ITEM-001',
-        value: 5000,
-        created: new Date().toISOString(),
-        timeoutIn: 48 // hours
+        ...report.transaction,
+        timeoutIn: report.transaction.timeoutAt ? 
+          Math.floor((new Date(report.transaction.timeoutAt).getTime() - Date.now()) / 3600000) : 0
       });
     } catch (error) {
       res.status(500).json({ 
@@ -280,15 +291,15 @@ export class ConsensusAPI {
     try {
       const { id } = req.params;
       
-      // This would query from dispute system
-      res.json({
-        id,
-        transactionId: 'TX-001',
-        type: 'not_received',
-        status: 'open',
-        creator: req.user!.orgId,
-        created: new Date().toISOString()
-      });
+      const report = await req.consensusSystem!.getTransactionReport(id);
+      const dispute = report.transaction.dispute;
+      
+      if (!dispute) {
+        res.status(404).json({ error: 'Dispute not found' });
+        return;
+      }
+      
+      res.json(dispute);
     } catch (error) {
       res.status(500).json({ 
         error: 'Failed to get dispute',
@@ -305,11 +316,12 @@ export class ConsensusAPI {
       const { id } = req.params;
       const { type, description, data } = req.body;
 
-      // Implementation would add evidence to dispute system
-
+      // This would be implemented through the dispute resolution system
+      // For now, acknowledge the request
       res.json({
         success: true,
-        message: 'Evidence added to dispute'
+        message: 'Evidence submission acknowledged',
+        evidenceId: `EVD-${Date.now()}`
       });
     } catch (error) {
       res.status(400).json({ 
@@ -332,11 +344,12 @@ export class ConsensusAPI {
       const { id } = req.params;
       const { decision, reasoning, actions } = req.body;
 
-      // Implementation would resolve dispute
-
+      // This would be implemented through the dispute resolution system
+      // For now, acknowledge the request
       res.json({
         success: true,
-        message: 'Dispute resolved'
+        message: 'Dispute resolution initiated',
+        resolutionId: `RES-${Date.now()}`
       });
     } catch (error) {
       res.status(400).json({ 
@@ -353,11 +366,13 @@ export class ConsensusAPI {
     try {
       const { participantId } = req.params;
       
-      // Implementation would query dispute system
-
+      // Query all pending transactions and filter for disputes
+      const pending = await req.consensusSystem!.getPendingTransactions(participantId);
+      const disputes = pending.filter(tx => tx.state === 'DISPUTED');
+      
       res.json({
-        count: 0,
-        disputes: []
+        count: disputes.length,
+        disputes
       });
     } catch (error) {
       res.status(500).json({ 
@@ -374,27 +389,9 @@ export class ConsensusAPI {
     try {
       const { participantId } = req.params;
 
-      // Implementation would query trust scoring system
-
-      res.json({
-        participantId,
-        score: 85,
-        level: {
-          name: 'trusted',
-          color: 'silver',
-          benefits: [
-            'most_transactions_auto_approved',
-            'extended_timeouts',
-            'batch_operations_allowed'
-          ]
-        },
-        statistics: {
-          totalTransactions: 150,
-          successfulTransactions: 148,
-          disputes: 2,
-          disputesWon: 1
-        }
-      });
+      const trustData = await req.consensusSystem!.getTrustScore(participantId);
+      
+      res.json(trustData);
     } catch (error) {
       res.status(500).json({ 
         error: 'Failed to get trust score',
@@ -411,11 +408,14 @@ export class ConsensusAPI {
       const { participantId } = req.params;
       const { limit = 10 } = req.query;
 
-      // Implementation would query trust history
-
+      const history = await req.consensusSystem!.getTrustHistory(
+        participantId,
+        Number(limit)
+      );
+      
       res.json({
         participantId,
-        history: []
+        history
       });
     } catch (error) {
       res.status(500).json({ 
@@ -432,10 +432,12 @@ export class ConsensusAPI {
     try {
       const { limit = 10 } = req.query;
 
-      // Implementation would query leaderboard
-
+      const leaderboard = await req.consensusSystem!.getTrustLeaderboard(
+        Number(limit)
+      );
+      
       res.json({
-        leaderboard: []
+        leaderboard
       });
     } catch (error) {
       res.status(500).json({ 
@@ -452,19 +454,13 @@ export class ConsensusAPI {
     try {
       const { participantId } = req.params;
 
-      // Implementation would check benefits
-
+      const trustData = await req.consensusSystem!.getTrustScore(participantId);
+      
       res.json({
         participantId,
-        benefits: [
-          'batch_operations_allowed',
-          'extended_timeouts'
-        ],
-        canPerform: {
-          batchOperations: true,
-          autoApproval: false,
-          apiAccess: false
-        }
+        benefits: trustData.benefits,
+        level: trustData.level,
+        score: trustData.score
       });
     } catch (error) {
       res.status(500).json({ 
@@ -489,12 +485,34 @@ export class ConsensusAPI {
       }
 
       // Check trust score for batch operations
-      // Implementation would process batch
-
+      const trustData = await req.consensusSystem!.getTrustScore(req.user!.orgId);
+      
+      if (!trustData.benefits.includes('batch_operations_allowed')) {
+        res.status(403).json({ 
+          error: 'Insufficient trust level for batch operations' 
+        });
+        return;
+      }
+      
+      const transactionIds = [];
+      
+      for (const txData of transactions) {
+        try {
+          const txId = await req.consensusSystem!.createB2BTransaction({
+            sender: req.user!.orgId,
+            ...txData
+          });
+          transactionIds.push(txId);
+        } catch (error) {
+          // Log but continue with other transactions
+          console.error('Batch transaction failed:', error);
+        }
+      }
+      
       res.status(201).json({
         success: true,
-        message: `Batch of ${transactions.length} transactions created`,
-        transactionIds: []
+        message: `Batch of ${transactionIds.length} transactions created`,
+        transactionIds
       });
     } catch (error) {
       res.status(400).json({ 
@@ -509,26 +527,23 @@ export class ConsensusAPI {
    */
   private async getStatistics(req: ApiRequest, res: Response): Promise<void> {
     try {
-      // Implementation would gather statistics
-
+      const metrics = await req.consensusSystem!.getSystemMetrics();
+      
       res.json({
         transactions: {
-          total: 1500,
-          pending: 23,
-          validated: 1450,
-          disputed: 27,
+          total: metrics.consensus.totalTransactions,
+          pending: metrics.consensus.pendingTransactions,
+          validated: metrics.consensus.totalTransactions - metrics.consensus.pendingTransactions - metrics.consensus.disputedTransactions,
+          disputed: metrics.consensus.disputedTransactions,
           timeout: 0
         },
         participants: {
-          total: 45,
-          active: 38,
-          trusted: 25
+          total: 0, // Would need to be tracked separately
+          active: 0,
+          trusted: metrics.trust.flaggedParties.length
         },
-        performance: {
-          averageConfirmationTime: 4.5, // hours
-          disputeRate: 1.8, // percentage
-          autoApprovalRate: 82.5 // percentage
-        }
+        performance: metrics.performance,
+        timestamp: metrics.timestamp
       });
     } catch (error) {
       res.status(500).json({ 
@@ -548,5 +563,244 @@ export class ConsensusAPI {
       version: '1.0.0',
       timestamp: new Date().toISOString()
     });
+  }
+  
+  /**
+   * Trigger emergency stop
+   */
+  private async triggerEmergencyStop(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { reason, transactionIds } = req.body;
+      
+      if (!reason) {
+        res.status(400).json({ error: 'Reason is required' });
+        return;
+      }
+      
+      if (req.user!.role !== 'admin' && req.user!.role !== 'security') {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return;
+      }
+      
+      await req.consensusSystem!.triggerEmergencyStop(req.user!.id, reason, transactionIds);
+      
+      res.json({
+        success: true,
+        message: 'Emergency stop triggered',
+        affectedTransactions: transactionIds?.length || 0
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to trigger emergency stop',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Resume from emergency stop
+   */
+  private async resumeEmergencyStop(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { stopId, transactionIds } = req.body;
+      
+      if (!stopId) {
+        res.status(400).json({ error: 'Stop ID is required' });
+        return;
+      }
+      
+      if (req.user!.role !== 'admin') {
+        res.status(403).json({ error: 'Only admins can resume emergency stops' });
+        return;
+      }
+      
+      await req.consensusSystem!.resumeEmergencyStop(stopId, req.user!.id, transactionIds);
+      
+      res.json({
+        success: true,
+        message: 'Emergency stop resumed'
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to resume emergency stop',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Get emergency stop status
+   */
+  private async getEmergencyStatus(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const metrics = await req.consensusSystem!.getSystemMetrics();
+      
+      res.json({
+        activeStops: metrics.emergency.activeStops || 0,
+        haltedTransactions: metrics.emergency.haltedTransactions || 0,
+        statistics: metrics.emergency
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get emergency status',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Approve compensation
+   */
+  private async approveCompensation(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { transactionId } = req.params;
+      
+      if (req.user!.role !== 'manager' && req.user!.role !== 'admin') {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return;
+      }
+      
+      await req.consensusSystem!.approveCompensation(transactionId, req.user!.id);
+      
+      res.json({
+        success: true,
+        message: 'Compensation approved'
+      });
+    } catch (error) {
+      res.status(400).json({ 
+        error: 'Failed to approve compensation',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Reject compensation
+   */
+  private async rejectCompensation(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { transactionId } = req.params;
+      const { reason } = req.body;
+      
+      if (!reason) {
+        res.status(400).json({ error: 'Rejection reason is required' });
+        return;
+      }
+      
+      if (req.user!.role !== 'manager' && req.user!.role !== 'admin') {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return;
+      }
+      
+      await req.consensusSystem!.rejectCompensation(transactionId, req.user!.id, reason);
+      
+      res.json({
+        success: true,
+        message: 'Compensation rejected'
+      });
+    } catch (error) {
+      res.status(400).json({ 
+        error: 'Failed to reject compensation',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Get pending compensations
+   */
+  private async getPendingCompensations(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      if (req.user!.role !== 'manager' && req.user!.role !== 'admin') {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return;
+      }
+      
+      const metrics = await req.consensusSystem!.getSystemMetrics();
+      
+      res.json({
+        pending: [], // Would need to query compensation engine directly
+        totalAmount: metrics.compensation?.totalPending || 0,
+        count: metrics.compensation?.pendingCount || 0
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get pending compensations',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Get performance report
+   */
+  private async getPerformanceReport(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { startDate, endDate } = req.body;
+      
+      if (!startDate || !endDate) {
+        res.status(400).json({ error: 'Start and end dates are required' });
+        return;
+      }
+      
+      const report = await req.consensusSystem!.getPerformanceReport(
+        new Date(startDate), 
+        new Date(endDate)
+      );
+      
+      res.json(report);
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to generate performance report',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Get party analytics
+   */
+  private async getPartyAnalytics(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { partyId } = req.params;
+      
+      // Verify access rights
+      if (partyId !== req.user!.orgId && req.user!.role !== 'admin') {
+        res.status(403).json({ error: 'Access denied' });
+        return;
+      }
+      
+      const metrics = await req.consensusSystem!.getPartyMetrics(partyId);
+      
+      res.json({
+        partyId,
+        metrics
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get party analytics',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Get insights
+   */
+  private async getInsights(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const metrics = await req.consensusSystem!.getSystemMetrics();
+      
+      res.json({
+        insights: metrics.insights || [],
+        recommendations: [],
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get insights',
+        message: (error as Error).message
+      });
+    }
   }
 }

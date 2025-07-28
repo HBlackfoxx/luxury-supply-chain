@@ -10,6 +10,12 @@ import { NotificationService } from '../services/notification-service';
 import { FabricIntegration } from './fabric-integration';
 import { EventIntegration } from './event-integration';
 import { Transaction, TransactionState } from '../core/types';
+import { trustScoreConverter } from './state-mapping';
+import { AnomalyDetector } from '../security/anomaly-detector';
+import { EmergencyStopSystem } from '../exceptions/emergency-stop';
+import { CompensationRuleEngine } from '../exceptions/compensation-rules';
+import { ProgressiveAutomation } from '../optimization/progressive-automation';
+import { PerformanceAnalytics } from '../analytics/performance-analytics';
 
 export interface OrchestratorConfig {
   fabricConfig: any;
@@ -28,6 +34,11 @@ export class ConsensusOrchestrator extends EventEmitter {
   private notificationService!: NotificationService;
   private fabricIntegration!: FabricIntegration;
   private eventIntegration!: EventIntegration;
+  private anomalyDetector!: AnomalyDetector;
+  private emergencyStop!: EmergencyStopSystem;
+  private compensationEngine!: CompensationRuleEngine;
+  private progressiveAutomation!: ProgressiveAutomation;
+  private performanceAnalytics!: PerformanceAnalytics;
   private isInitialized: boolean = false;
 
   constructor(private config: OrchestratorConfig) {
@@ -77,6 +88,30 @@ export class ConsensusOrchestrator extends EventEmitter {
     
     // Initialize trust scoring system
     this.trustSystem = new TrustScoringSystem();
+    
+    // Initialize AI anomaly detector
+    this.anomalyDetector = new AnomalyDetector(this.trustSystem);
+    
+    // Initialize emergency stop system
+    this.emergencyStop = new EmergencyStopSystem(
+      this.stateManager,
+      this.anomalyDetector
+    );
+    
+    // Initialize compensation engine
+    this.compensationEngine = new CompensationRuleEngine();
+    
+    // Initialize progressive automation
+    this.progressiveAutomation = new ProgressiveAutomation(
+      this.trustSystem,
+      this.stateManager
+    );
+    
+    // Initialize performance analytics
+    this.performanceAnalytics = new PerformanceAnalytics(
+      this.stateManager,
+      this.trustSystem
+    );
   }
 
   private initializeExceptionComponents(): void {
@@ -125,6 +160,11 @@ export class ConsensusOrchestrator extends EventEmitter {
     this.eventIntegration.registerComponent('escalationHandler', this.escalationHandler);
     this.eventIntegration.registerComponent('evidenceManager', this.evidenceManager);
     this.eventIntegration.registerComponent('fabricIntegration', this.fabricIntegration);
+    this.eventIntegration.registerComponent('anomalyDetector', this.anomalyDetector);
+    this.eventIntegration.registerComponent('emergencyStop', this.emergencyStop);
+    this.eventIntegration.registerComponent('compensationEngine', this.compensationEngine);
+    this.eventIntegration.registerComponent('progressiveAutomation', this.progressiveAutomation);
+    this.eventIntegration.registerComponent('performanceAnalytics', this.performanceAnalytics);
   }
 
   private setupEventOrchestration(): void {
@@ -135,6 +175,8 @@ export class ConsensusOrchestrator extends EventEmitter {
     this.setupTimeoutOrchestration();
     this.setupTrustOrchestration();
     this.setupNotificationOrchestration();
+    this.setupAnomalyOrchestration();
+    this.setupCompensationOrchestration();
   }
 
   private setupTimeoutOrchestration(): void {
@@ -182,6 +224,67 @@ export class ConsensusOrchestrator extends EventEmitter {
     });
   }
 
+  private setupAnomalyOrchestration(): void {
+    // When anomalies are detected, take appropriate action
+    this.anomalyDetector.on('anomaly_detected', async (event) => {
+      const { transactionId, result } = event;
+      
+      // Log critical anomalies
+      if (result.riskScore >= 80) {
+        console.log(`[CRITICAL ANOMALY] Transaction ${transactionId}: ${result.reasons.join(', ')}`);
+      }
+      
+      // Check if compensation might be needed
+      if (result.patterns.some((p: any) => p.type === 'value' && p.severity === 'high')) {
+        await this.compensationEngine.calculateCompensation(
+          await this.fabricIntegration.getTransaction(transactionId),
+          'anomaly_detected',
+          { anomalyResult: result }
+        );
+      }
+    });
+    
+    // When party is blacklisted, halt their transactions
+    this.anomalyDetector.on('party_blacklisted', async (event) => {
+      const { partyId, reason } = event;
+      await this.emergencyStop.triggerEmergencyStop(
+        'security_system',
+        `Party blacklisted: ${reason}`,
+        []
+      );
+    });
+  }
+  
+  private setupCompensationOrchestration(): void {
+    // When dispute is resolved, check for compensation
+    this.disputeResolution.on('dispute_resolved', async (event) => {
+      const { dispute, resolution } = event;
+      if (resolution.outcome) {
+        await this.compensationEngine.handleDisputeOutcome(
+          dispute.transactionId,
+          resolution.outcome,
+          resolution
+        );
+      }
+    });
+    
+    // When timeout occurs, calculate compensation
+    this.eventIntegration.subscribe('timeout_expired', async (event) => {
+      const { transactionId } = event.data;
+      const transaction = await this.fabricIntegration.getTransaction(transactionId);
+      await this.compensationEngine.calculateCompensation(
+        transaction,
+        'timeout',
+        { timeoutData: event.data }
+      );
+    });
+    
+    // Handle compensation approvals
+    this.compensationEngine.on('approval_required', (event) => {
+      this.emit('compensation_approval_required', event);
+    });
+  }
+  
   private setupNotificationOrchestration(): void {
     // Aggregate related events for batch notifications
     let notificationQueue: Map<string, any[]> = new Map();
@@ -221,13 +324,32 @@ export class ConsensusOrchestrator extends EventEmitter {
     }
     
     try {
+      // Check for anomalies before submission
+      const anomalyResult = await this.anomalyDetector.analyzeTransaction(transaction);
+      
+      // Check if emergency stop should be triggered
+      const shouldStop = await this.emergencyStop.checkTransaction(transaction, anomalyResult);
+      if (shouldStop) {
+        throw new Error('Transaction halted by emergency stop system');
+      }
+      
+      // Check for progressive automation
+      const automationDecision = await this.progressiveAutomation.evaluateTransaction(transaction);
+      if (automationDecision.shouldAutomate) {
+        await this.progressiveAutomation.applyAutomation(transaction, automationDecision);
+      }
+      
+      // Adjust timeout dynamically based on trust
+      const dynamicTimeout = await this.progressiveAutomation.adjustTimeoutDynamically(transaction);
+      transaction.timeoutAt = new Date(Date.now() + dynamicTimeout * 3600000);
+      
       // Submit through Fabric integration
       const transactionId = await this.fabricIntegration.submitTransaction(transaction);
       
       // Start monitoring
       await this.startTransactionMonitoring(transactionId);
       
-      this.emit('transaction_submitted', { transactionId, transaction });
+      this.emit('transaction_submitted', { transactionId, transaction, anomalyResult, automationDecision });
       
       return transactionId;
     } catch (error) {
@@ -266,6 +388,7 @@ export class ConsensusOrchestrator extends EventEmitter {
 
   public async raiseDispute(
     transactionId: string,
+    initiator: string,
     reason: string,
     evidence?: any[]
   ): Promise<string> {
@@ -274,14 +397,18 @@ export class ConsensusOrchestrator extends EventEmitter {
     }
     
     try {
+      // First raise dispute in chaincode
+      await this.fabricIntegration.raiseDispute(transactionId, initiator, reason);
+      
+      // Then create local dispute record
       const transaction = await this.fabricIntegration.getTransaction(transactionId);
       const dispute = await this.disputeResolution.createDispute({
         transactionId,
         transaction,
         type: reason as any, // Would map reason to DisputeType
-        creator: 'user',
+        creator: initiator,
         reason,
-        initiator: 'user',
+        initiator: initiator,
         timestamp: new Date()
       });
       
@@ -336,7 +463,7 @@ export class ConsensusOrchestrator extends EventEmitter {
     
     // Check if transaction is stuck
     const ageInMinutes = (Date.now() - transaction.timestamp.getTime()) / (1000 * 60);
-    if (transaction.state === TransactionState.INITIATED && ageInMinutes > 60) {
+    if ((transaction.state === TransactionState.CREATED || transaction.state === TransactionState.INITIATED) && ageInMinutes > 60) {
       anomalies.push('transaction_stuck');
     }
     
@@ -344,7 +471,8 @@ export class ConsensusOrchestrator extends EventEmitter {
     const senderTrust = await this.trustSystem.getScore(transaction.sender);
     const receiverTrust = await this.trustSystem.getScore(transaction.receiver);
     
-    if (senderTrust < 0.3 || receiverTrust < 0.3) {
+    // Trust scores in TypeScript are 0-200, so check for low trust (< 60 out of 200)
+    if (senderTrust < 60 || receiverTrust < 60) {
       anomalies.push('low_trust_party');
     }
     
@@ -369,7 +497,7 @@ export class ConsensusOrchestrator extends EventEmitter {
     }
     
     // Notify sender if waiting for their confirmation
-    if (transaction.state === TransactionState.INITIATED) {
+    if (transaction.state === TransactionState.CREATED || transaction.state === TransactionState.INITIATED) {
       parties.push(transaction.sender);
     }
     
@@ -430,6 +558,10 @@ export class ConsensusOrchestrator extends EventEmitter {
     const eventMetrics = this.eventIntegration.getEventMetrics();
     const networkStats = await this.fabricIntegration.getNetworkStats();
     const systemHealth = this.eventIntegration.getSystemHealth();
+    const performanceMetrics = await this.performanceAnalytics.calculatePerformanceMetrics();
+    const emergencyStats = this.emergencyStop.getStatistics();
+    const compensationStats = this.compensationEngine.getStatistics();
+    const automationStats = this.progressiveAutomation.getStatistics();
     
     return {
       consensus: {
@@ -442,8 +574,13 @@ export class ConsensusOrchestrator extends EventEmitter {
         averageScore: networkStats.trustScoreAverage,
         flaggedParties: await this.trustSystem.getFlaggedParties()
       },
+      performance: performanceMetrics,
+      emergency: emergencyStats,
+      compensation: compensationStats,
+      automation: automationStats,
       events: eventMetrics,
       health: systemHealth,
+      insights: this.performanceAnalytics.getInsights(),
       timestamp: new Date()
     };
   }
@@ -465,6 +602,51 @@ export class ConsensusOrchestrator extends EventEmitter {
     };
   }
 
+  // Emergency stop operations
+  public async triggerEmergencyStop(
+    triggeredBy: string,
+    reason: string,
+    transactionIds?: string[]
+  ): Promise<void> {
+    return this.emergencyStop.triggerEmergencyStop(triggeredBy, reason, transactionIds);
+  }
+  
+  public async resumeEmergencyStop(
+    stopId: string,
+    approvedBy: string,
+    transactionIds?: string[]
+  ): Promise<void> {
+    return this.emergencyStop.resumeTransactions(stopId, approvedBy, transactionIds);
+  }
+  
+  // Compensation operations
+  public async approveCompensation(
+    transactionId: string,
+    approvedBy: string
+  ): Promise<void> {
+    return this.compensationEngine.approveCompensation(transactionId, approvedBy);
+  }
+  
+  public async rejectCompensation(
+    transactionId: string,
+    rejectedBy: string,
+    reason: string
+  ): Promise<void> {
+    return this.compensationEngine.rejectCompensation(transactionId, rejectedBy, reason);
+  }
+  
+  // Performance analytics
+  public async getPerformanceReport(
+    startDate: Date,
+    endDate: Date
+  ): Promise<any> {
+    return this.performanceAnalytics.generateReport(startDate, endDate);
+  }
+  
+  public async getPartyMetrics(partyId: string): Promise<any> {
+    return this.performanceAnalytics.getPartyMetrics(partyId);
+  }
+  
   // Cleanup
   public async shutdown(): Promise<void> {
     if (!this.isInitialized) {
@@ -472,6 +654,9 @@ export class ConsensusOrchestrator extends EventEmitter {
     }
     
     try {
+      // Stop analytics collection
+      this.performanceAnalytics.stopMetricsCollection();
+      
       // Disconnect from Fabric
       await this.fabricIntegration.disconnect();
       

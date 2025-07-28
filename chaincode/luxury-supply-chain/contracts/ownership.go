@@ -74,7 +74,7 @@ func (o *OwnershipContract) CreateDigitalBirthCertificate(ctx contractapi.Transa
 	certificate := DigitalBirthCertificate{
 		ProductID:          productID,
 		Brand:              product.Brand,
-		ManufacturingDate:  time.Now(),
+		ManufacturingDate:  time.Now().Format(time.RFC3339),
 		ManufacturingPlace: manufacturingPlace,
 		Craftsman:          craftsman,
 		Materials:          materialRecords,
@@ -147,7 +147,7 @@ func (o *OwnershipContract) ClaimOwnership(ctx contractapi.TransactionContextInt
 	ownership := Ownership{
 		ProductID:        productID,
 		OwnerHash:        ownerHash,
-		OwnershipDate:    time.Now(),
+		OwnershipDate:    time.Now().Format(time.RFC3339),
 		PurchaseLocation: purchaseLocation,
 		Status:           OwnershipStatusActive,
 		ServiceHistory:   []ServiceRecord{},
@@ -196,11 +196,11 @@ func (o *OwnershipContract) GenerateTransferCode(ctx contractapi.TransactionCont
 	code := o.generateRandomCode(8)
 	
 	// Set expiry (24 hours)
-	expiry := time.Now().Add(24 * time.Hour)
+	expiry := time.Now().Add(24 * time.Hour).Format(time.RFC3339)
 
 	// Update ownership with transfer code
 	ownership.TransferCode = code
-	ownership.TransferExpiry = &expiry
+	ownership.TransferExpiry = expiry
 	ownership.Status = OwnershipStatusTransferring
 
 	ownershipJSON, err := json.Marshal(ownership)
@@ -233,7 +233,7 @@ func (o *OwnershipContract) TransferOwnership(ctx contractapi.TransactionContext
 	}
 
 	// Check expiry
-	if ownership.TransferExpiry == nil || time.Now().After(*ownership.TransferExpiry) {
+	if ownership.TransferExpiry == "" || time.Now().Format(time.RFC3339) > ownership.TransferExpiry {
 		return fmt.Errorf("transfer code has expired")
 	}
 
@@ -244,16 +244,16 @@ func (o *OwnershipContract) TransferOwnership(ctx contractapi.TransactionContext
 	prevOwner := PreviousOwner{
 		OwnerHash:     ownership.OwnerHash,
 		OwnershipDate: ownership.OwnershipDate,
-		TransferDate:  time.Now(),
+		TransferDate:  time.Now().Format(time.RFC3339),
 		TransferType:  "sale",
 	}
 	ownership.PreviousOwners = append(ownership.PreviousOwners, prevOwner)
 
 	// Update ownership
 	ownership.OwnerHash = newOwnerHash
-	ownership.OwnershipDate = time.Now()
+	ownership.OwnershipDate = time.Now().Format(time.RFC3339)
 	ownership.TransferCode = ""
-	ownership.TransferExpiry = nil
+	ownership.TransferExpiry = ""
 	ownership.Status = OwnershipStatusActive
 
 	// Store updated ownership
@@ -308,7 +308,7 @@ func (o *OwnershipContract) ReportStolen(ctx contractapi.TransactionContextInter
 
 	stolenRecord := ServiceRecord{
 		ID:            policeReportID,
-		Date:          time.Now(),
+		Date:          time.Now().Format(time.RFC3339),
 		ServiceCenter: "Police Report",
 		Type:          "stolen_report",
 		Description:   "Product reported stolen",
@@ -413,12 +413,25 @@ func (o *OwnershipContract) AddServiceRecord(ctx contractapi.TransactionContextI
 	}
 
 	// Only authorized service centers can add records
-	// In production, this would check against authorized service center list
-	caller, _ := ctx.GetClientIdentity().GetMSPID()
+	caller, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get caller identity: %v", err)
+	}
+	
+	// Check if caller is authorized (must be from a known organization)
+	authorizedOrgs := map[string]bool{
+		"LuxeBagsMSP":       true,
+		"CraftWorkshopMSP":  true,
+		"LuxuryRetailMSP":   true,
+	}
+	
+	if !authorizedOrgs[caller] {
+		return fmt.Errorf("caller %s is not authorized to add service records", caller)
+	}
 	
 	record := ServiceRecord{
 		ID:            serviceID,
-		Date:          time.Now(),
+		Date:          time.Now().Format(time.RFC3339),
 		ServiceCenter: serviceCenter,
 		Type:          serviceType,
 		Description:   description,

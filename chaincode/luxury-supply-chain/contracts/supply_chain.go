@@ -44,7 +44,7 @@ func (s *SupplyChainContract) CreateProduct(ctx contractapi.TransactionContextIn
 		Name:            name,
 		Type:            productType,
 		SerialNumber:    serialNumber,
-		CreatedAt:       time.Now(),
+		CreatedAt:       time.Now().Format(time.RFC3339),
 		CurrentOwner:    creator,
 		CurrentLocation: creator,
 		Status:          ProductStatusCreated,
@@ -83,7 +83,7 @@ func (s *SupplyChainContract) AddMaterial(ctx contractapi.TransactionContextInte
 		Supplier:     supplier,
 		Batch:        batch,
 		Verification: verification,
-		ReceivedDate: time.Now(),
+		ReceivedDate: time.Now().Format(time.RFC3339),
 	}
 
 	product.Materials = append(product.Materials, material)
@@ -115,7 +115,7 @@ func (s *SupplyChainContract) AddQualityCheckpoint(ctx contractapi.TransactionCo
 		ID:        checkpointID,
 		Stage:     stage,
 		Inspector: inspector,
-		Date:      time.Now(),
+		Date:      time.Now().Format(time.RFC3339),
 		Passed:    passed,
 		Details:   details,
 	}
@@ -164,12 +164,12 @@ func (s *SupplyChainContract) InitiateTransfer(ctx contractapi.TransactionContex
 		From:         sender,
 		To:           to,
 		TransferType: transferType,
-		InitiatedAt:  time.Now(),
+		InitiatedAt:  time.Now().Format(time.RFC3339),
 		Status:       TransferStatusInitiated,
 		ConsensusDetails: ConsensusInfo{
 			SenderConfirmed: false,
 			ReceiverConfirmed: false,
-			TimeoutAt: time.Now().Add(24 * time.Hour), // 24 hour timeout
+			TimeoutAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339), // 24 hour timeout
 		},
 	}
 
@@ -214,9 +214,9 @@ func (s *SupplyChainContract) ConfirmSent(ctx contractapi.TransactionContextInte
 	}
 
 	// Update consensus info
-	now := time.Now()
+	now := time.Now().Format(time.RFC3339)
 	transfer.ConsensusDetails.SenderConfirmed = true
-	transfer.ConsensusDetails.SenderTimestamp = &now
+	transfer.ConsensusDetails.SenderTimestamp = now
 	transfer.Status = TransferStatusPending
 
 	transferJSON, err := json.Marshal(transfer)
@@ -264,11 +264,11 @@ func (s *SupplyChainContract) ConfirmReceived(ctx contractapi.TransactionContext
 	}
 
 	// Update consensus info
-	now := time.Now()
+	now := time.Now().Format(time.RFC3339)
 	transfer.ConsensusDetails.ReceiverConfirmed = true
-	transfer.ConsensusDetails.ReceiverTimestamp = &now
+	transfer.ConsensusDetails.ReceiverTimestamp = now
 	transfer.Status = TransferStatusCompleted
-	transfer.CompletedAt = &now
+	transfer.CompletedAt = now
 
 	// Update product ownership
 	product, err := s.GetProduct(ctx, transfer.ProductID)

@@ -7,6 +7,7 @@ import { TransactionHandler } from '../gateway/src/fabric/transaction-handler';
 import { EventListenerManager } from '../gateway/src/fabric/event-listener';
 import { TransactionStateManager, TransactionState, Transaction } from '../../consensus/2check/core/state/state-manager';
 import { EventEmitter } from 'events';
+import { mapTsStateToGo, trustScoreConverter } from '../../consensus/2check/integration/state-mapping';
 
 export interface ConsensusTransaction {
   id: string;
@@ -85,7 +86,7 @@ export class FabricConsensusAdapter extends EventEmitter {
       receiver: transaction.receiver,
       itemId: transaction.itemId,
       value: transaction.value,
-      state: transaction.state,
+      state: mapTsStateToGo(transaction.state),
       senderConfirmed: false,
       receiverConfirmed: false,
       created: transaction.created.toISOString(),
@@ -96,9 +97,16 @@ export class FabricConsensusAdapter extends EventEmitter {
 
     const result = await this.transactionHandler.submitTransaction(
       this.contract,
-      'createConsensusTransaction',
+      'SubmitTransaction',
       {
-        arguments: [JSON.stringify(chaincodeTransaction)]
+        arguments: [
+          transaction.id,
+          transaction.sender,
+          transaction.receiver,
+          transaction.itemType || 'product_transfer',
+          transaction.itemId,
+          JSON.stringify(transaction.metadata || {})
+        ]
       }
     );
 
@@ -126,21 +134,44 @@ export class FabricConsensusAdapter extends EventEmitter {
       throw new Error('Contract not initialized');
     }
 
-    const stateUpdate = {
-      transactionId,
-      newState,
-      actor,
-      timestamp: new Date().toISOString(),
-      evidence: evidence ? JSON.stringify(evidence) : null
-    };
-
-    const result = await this.transactionHandler.submitTransaction(
-      this.contract,
-      'updateTransactionState',
-      {
-        arguments: [JSON.stringify(stateUpdate)]
-      }
-    );
+    // Map TypeScript state to Go state
+    
+    // The Go chaincode doesn't have a generic updateTransactionState
+    // We need to use the specific functions based on the state
+    let result;
+    
+    switch (newState) {
+      case TransactionState.SENT:
+        result = await this.transactionHandler.submitTransaction(
+          this.contract,
+          'ConfirmSent',
+          {
+            arguments: [transactionId, actor]
+          }
+        );
+        break;
+      case TransactionState.RECEIVED:
+        result = await this.transactionHandler.submitTransaction(
+          this.contract,
+          'ConfirmReceived',
+          {
+            arguments: [transactionId, actor]
+          }
+        );
+        break;
+      case TransactionState.DISPUTED:
+        result = await this.transactionHandler.submitTransaction(
+          this.contract,
+          'RaiseDispute',
+          {
+            arguments: [transactionId, actor, evidence?.reason || 'Dispute raised']
+          }
+        );
+        break;
+      default:
+        // For other states, we might need to implement additional functions in the chaincode
+        throw new Error(`State transition to ${newState} not supported via direct chaincode call`);
+    }
 
     if (!result.success) {
       throw new Error(`Failed to update state on chain: ${result.error}`);
@@ -165,18 +196,13 @@ export class FabricConsensusAdapter extends EventEmitter {
       throw new Error('Contract not initialized');
     }
 
-    const confirmation = {
-      transactionId,
-      senderId,
-      timestamp: new Date().toISOString(),
-      evidence: evidence ? JSON.stringify(evidence) : null
-    };
+    // Direct call to chaincode with required parameters
 
     const result = await this.transactionHandler.submitTransaction(
       this.contract,
-      'confirmSent',
+      'ConfirmSent',
       {
-        arguments: [JSON.stringify(confirmation)]
+        arguments: [transactionId, senderId]
       }
     );
 
@@ -197,18 +223,13 @@ export class FabricConsensusAdapter extends EventEmitter {
       throw new Error('Contract not initialized');
     }
 
-    const confirmation = {
-      transactionId,
-      receiverId,
-      timestamp: new Date().toISOString(),
-      evidence: evidence ? JSON.stringify(evidence) : null
-    };
+    // Direct call to chaincode with required parameters
 
     const result = await this.transactionHandler.submitTransaction(
       this.contract,
-      'confirmReceived',
+      'ConfirmReceived',
       {
-        arguments: [JSON.stringify(confirmation)]
+        arguments: [transactionId, receiverId]
       }
     );
 
@@ -230,19 +251,13 @@ export class FabricConsensusAdapter extends EventEmitter {
       throw new Error('Contract not initialized');
     }
 
-    const dispute = {
-      transactionId,
-      disputeCreator,
-      disputeType,
-      timestamp: new Date().toISOString(),
-      evidence: JSON.stringify(evidence)
-    };
+    // Direct call to chaincode with required parameters
 
     const result = await this.transactionHandler.submitTransaction(
       this.contract,
-      'createDispute',
+      'RaiseDispute',
       {
-        arguments: [JSON.stringify(dispute)]
+        arguments: [transactionId, disputeCreator, disputeType]
       }
     );
 
@@ -261,7 +276,7 @@ export class FabricConsensusAdapter extends EventEmitter {
 
     const result = await this.transactionHandler.evaluateTransaction(
       this.contract,
-      'queryTransaction',
+      'GetTransaction',
       transactionId
     );
 
@@ -443,7 +458,7 @@ export class FabricConsensusAdapter extends EventEmitter {
 
     // Check if submitter is allowed batch operations
     const trustScore = await this.getTrustScore(submitterId);
-    const minScore = 100; // From config
+    const minScore = 100; // TypeScript scale (0-200)
     
     if (trustScore < minScore) {
       throw new Error('Insufficient trust score for batch operations');
@@ -487,7 +502,7 @@ export class FabricConsensusAdapter extends EventEmitter {
 
     const result = await this.transactionHandler.evaluateTransaction(
       this.contract,
-      'getTrustScore',
+      'GetTrustScore',
       participantId
     );
 
@@ -495,6 +510,8 @@ export class FabricConsensusAdapter extends EventEmitter {
       return 0;
     }
 
-    return result.result as number;
+    // Convert Go trust score (0-1) to TypeScript scale (0-200)
+    const goScore = result.result as number;
+    return trustScoreConverter.goToTs(goScore);
   }
 }

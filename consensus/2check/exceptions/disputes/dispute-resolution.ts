@@ -53,10 +53,13 @@ export interface Evidence {
   verified: boolean;
 }
 
+export type DisputeOutcome = 'buyer_favored' | 'seller_favored' | 'partial_refund' | 'no_action';
+
 export interface Resolution {
   decidedBy: string;
   decidedAt: Date;
   decision: 'favor_creator' | 'favor_respondent' | 'split' | 'void';
+  outcome?: DisputeOutcome;
   reasoning: string;
   actions: ResolutionAction[];
   compensation?: Compensation;

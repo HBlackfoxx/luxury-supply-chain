@@ -35,3 +35,4 @@ test-network-lifecycle.sh
 test-phase2-integration.js
 test-sdk-compilation.sh
 validate-phase1.sh
+/backend/erp-integration/node_modules

@@ -259,4 +259,197 @@ export class SDKConfigManager {
     
     return this.brandConfig.network.orderers.map(orderer => `localhost:${orderer.port}`);
   }
+
+  // Get peer TLS certificate
+  private getPeerTLSCertPem(orgId: string): string {
+    const certPath = path.join(
+      this.cryptoPath,
+      'peerOrganizations',
+      `${orgId}.luxe-bags.luxury`,
+      'peers',
+      `peer0.${orgId}.luxe-bags.luxury`,
+      'tls',
+      'ca.crt'
+    );
+    
+    if (fs.existsSync(certPath)) {
+      return fs.readFileSync(certPath, 'utf8');
+    }
+    
+    // Return a placeholder for testing
+    return '-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----';
+  }
+
+  // Get organization CA certificate
+  private getOrgCACertPem(orgId: string): string {
+    const certPath = path.join(
+      this.cryptoPath,
+      'peerOrganizations',
+      `${orgId}.luxe-bags.luxury`,
+      'ca',
+      `ca.${orgId}.luxe-bags.luxury-cert.pem`
+    );
+    
+    if (fs.existsSync(certPath)) {
+      return fs.readFileSync(certPath, 'utf8');
+    }
+    
+    // Return a placeholder for testing
+    return '-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----';
+  }
+
+  // Get orderer TLS certificate
+  private getOrdererTLSCertPem(ordererId: string): string {
+    const certPath = path.join(
+      this.cryptoPath,
+      'ordererOrganizations',
+      'orderer.luxe-bags.luxury',
+      'orderers',
+      `${ordererId}.orderer.luxe-bags.luxury`,
+      'tls',
+      'ca.crt'
+    );
+    
+    if (fs.existsSync(certPath)) {
+      return fs.readFileSync(certPath, 'utf8');
+    }
+    
+    // For default orderer
+    const defaultPath = path.join(
+      this.cryptoPath,
+      'ordererOrganizations',
+      'orderer.luxe-bags.luxury',
+      'orderers',
+      'orderer1.orderer.luxe-bags.luxury',
+      'tls',
+      'ca.crt'
+    );
+    
+    if (fs.existsSync(defaultPath)) {
+      return fs.readFileSync(defaultPath, 'utf8');
+    }
+    
+    // Return a placeholder for testing
+    return '-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----';
+  }
+
+  // Get connection profile for Fabric SDK Gateway
+  public getConnectionProfile(): any {
+    const organizations: any = {};
+    const peers: any = {};
+    const certificateAuthorities: any = {};
+
+    // Build organizations section
+    this.brandConfig.network.organizations.forEach(org => {
+      organizations[org.id] = {
+        mspid: org.mspId,
+        peers: org.peers.map(peer => `${peer.name}.${org.id}.luxe-bags.luxury`),
+        certificateAuthorities: [`ca.${org.id}.luxe-bags.luxury`]
+      };
+
+      // Build peers section
+      org.peers.forEach(peer => {
+        const peerName = `${peer.name}.${org.id}.luxe-bags.luxury`;
+        peers[peerName] = {
+          url: `grpcs://localhost:${peer.port}`,
+          tlsCACerts: {
+            pem: this.getPeerTLSCertPem(org.id)
+          },
+          grpcOptions: {
+            'ssl-target-name-override': peerName,
+            hostnameOverride: peerName
+          }
+        };
+      });
+
+      // Build CAs section
+      const caName = `ca.${org.id}.luxe-bags.luxury`;
+      certificateAuthorities[caName] = {
+        url: `https://localhost:${7054 + this.brandConfig.network.organizations.indexOf(org) * 1000}`,
+        caName: `ca-${org.id}`,
+        tlsCACerts: {
+          pem: [this.getOrgCACertPem(org.id)]
+        },
+        httpOptions: {
+          verify: false
+        }
+      };
+    });
+
+    // Build orderers section
+    const orderers: any = {};
+    if (this.brandConfig.network.orderers) {
+      this.brandConfig.network.orderers.forEach((orderer, index) => {
+        const ordererName = `${orderer.name}.orderer.luxe-bags.luxury`;
+        orderers[ordererName] = {
+          url: `grpcs://localhost:${orderer.port}`,
+          tlsCACerts: {
+            pem: this.getOrdererTLSCertPem(orderer.name)
+          },
+          grpcOptions: {
+            'ssl-target-name-override': ordererName,
+            hostnameOverride: ordererName
+          }
+        };
+      });
+    } else {
+      // Default orderer configuration
+      orderers['orderer1.orderer.luxe-bags.luxury'] = {
+        url: 'grpcs://localhost:7050',
+        tlsCACerts: {
+          pem: this.getOrdererTLSCertPem('orderer1')
+        },
+        grpcOptions: {
+          'ssl-target-name-override': 'orderer1.orderer.luxe-bags.luxury',
+          hostnameOverride: 'orderer1.orderer.luxe-bags.luxury'
+        }
+      };
+    }
+
+    // Build channels section
+    const channels: any = {};
+    this.brandConfig.network.channels.forEach(channel => {
+      channels[channel.name] = {
+        orderers: Object.keys(orderers),
+        peers: {}
+      };
+
+      // Add all peers from participating organizations
+      channel.application.organizations.forEach(orgId => {
+        const org = this.brandConfig.network.organizations.find(o => o.id === orgId);
+        if (org) {
+          org.peers.forEach(peer => {
+            const peerName = `${peer.name}.${org.id}.luxe-bags.luxury`;
+            channels[channel.name].peers[peerName] = {
+              endorsingPeer: true,
+              chaincodeQuery: true,
+              ledgerQuery: true,
+              eventSource: true
+            };
+          });
+        }
+      });
+    });
+
+    return {
+      name: 'luxury-supply-chain-network',
+      version: '1.0.0',
+      client: {
+        organization: this.brandConfig.brand.id,
+        connection: {
+          timeout: {
+            peer: {
+              endorser: '300'
+            },
+            orderer: '300'
+          }
+        }
+      },
+      organizations,
+      peers,
+      orderers,
+      certificateAuthorities,
+      channels
+    };
+  }
 }

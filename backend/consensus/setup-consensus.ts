@@ -11,6 +11,8 @@ import { FabricMonitor } from '../gateway/src/monitoring/fabric-monitor';
 import { TransactionStateManager } from '../../consensus/2check/core/state/state-manager';
 import { ValidationEngine } from '../../consensus/2check/core/validation/validation-engine';
 import { FabricConsensusAdapter } from './fabric-consensus-adapter';
+import { ConsensusOrchestrator } from '../../consensus/2check/integration/consensus-orchestrator';
+import { TrustScoringSystem } from '../../consensus/2check/core/trust/trust-scoring-system';
 
 export class ConsensusSystem {
   private configManager: SDKConfigManager;
@@ -23,6 +25,8 @@ export class ConsensusSystem {
   private stateManager: TransactionStateManager;
   private validationEngine: ValidationEngine;
   private fabricAdapter: FabricConsensusAdapter;
+  private orchestrator: ConsensusOrchestrator;
+  private trustSystem: TrustScoringSystem;
 
   constructor(brandId: string) {
     // Initialize Phase 1 components
@@ -40,12 +44,25 @@ export class ConsensusSystem {
     // Initialize Phase 2 components
     this.stateManager = new TransactionStateManager();
     this.validationEngine = new ValidationEngine();
+    this.trustSystem = new TrustScoringSystem();
     this.fabricAdapter = new FabricConsensusAdapter(
       this.stateManager,
       this.gatewayManager,
       this.transactionHandler,
       this.eventListener
     );
+
+    // Initialize the orchestrator with all components
+    this.orchestrator = new ConsensusOrchestrator({
+      fabricConfig: {
+        channelName: 'luxury-supply-chain',
+        chaincodeName: 'consensus',
+        mspId: brandId,
+        walletPath: './wallet',
+        connectionProfile: this.configManager.getConnectionProfile()
+      },
+      consensusConfig: {}
+    });
 
     this.setupEventHandlers();
   }
@@ -59,6 +76,9 @@ export class ConsensusSystem {
     try {
       // Initialize Fabric connection
       await this.fabricAdapter.initialize(orgId, userId);
+
+      // Initialize the orchestrator
+      await this.orchestrator.initialize();
 
       // Setup monitoring for consensus events
       this.setupConsensusMonitoring();
@@ -322,6 +342,247 @@ export class ConsensusSystem {
    */
   private generateTransactionId(): string {
     return `TX-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  /**
+   * Emergency Stop Operations
+   */
+  public async triggerEmergencyStop(
+    triggeredBy: string,
+    reason: string,
+    transactionIds?: string[]
+  ): Promise<void> {
+    try {
+      await this.orchestrator.triggerEmergencyStop(triggeredBy, reason, transactionIds);
+      
+      this.monitor.logInfo('Emergency stop triggered', {
+        triggeredBy,
+        reason,
+        affectedTransactions: transactionIds?.length || 0
+      });
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'trigger_emergency_stop',
+        triggeredBy,
+        reason
+      });
+      throw error;
+    }
+  }
+
+  public async resumeEmergencyStop(
+    stopId: string,
+    approvedBy: string,
+    transactionIds?: string[]
+  ): Promise<void> {
+    try {
+      await this.orchestrator.resumeEmergencyStop(stopId, approvedBy, transactionIds);
+      
+      this.monitor.logInfo('Emergency stop resumed', {
+        stopId,
+        approvedBy,
+        resumedTransactions: transactionIds?.length || 'all'
+      });
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'resume_emergency_stop',
+        stopId,
+        approvedBy
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Compensation Operations
+   */
+  public async approveCompensation(
+    transactionId: string,
+    approvedBy: string
+  ): Promise<void> {
+    try {
+      await this.orchestrator.approveCompensation(transactionId, approvedBy);
+      
+      this.monitor.logInfo('Compensation approved', {
+        transactionId,
+        approvedBy
+      });
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'approve_compensation',
+        transactionId,
+        approvedBy
+      });
+      throw error;
+    }
+  }
+
+  public async rejectCompensation(
+    transactionId: string,
+    rejectedBy: string,
+    reason: string
+  ): Promise<void> {
+    try {
+      await this.orchestrator.rejectCompensation(transactionId, rejectedBy, reason);
+      
+      this.monitor.logInfo('Compensation rejected', {
+        transactionId,
+        rejectedBy,
+        reason
+      });
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'reject_compensation',
+        transactionId,
+        rejectedBy
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Performance Analytics
+   */
+  public async getPerformanceReport(
+    startDate: Date,
+    endDate: Date
+  ): Promise<any> {
+    try {
+      const report = await this.orchestrator.getPerformanceReport(startDate, endDate);
+      
+      this.monitor.logInfo('Performance report generated', {
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString()
+      });
+      
+      return report;
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_performance_report',
+        startDate: startDate.toISOString(),
+        endDate: endDate.toISOString()
+      });
+      throw error;
+    }
+  }
+
+  public async getPartyMetrics(partyId: string): Promise<any> {
+    try {
+      const metrics = await this.orchestrator.getPartyMetrics(partyId);
+      
+      return metrics;
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_party_metrics',
+        partyId
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Trust Score Operations
+   */
+  public async getTrustScore(participantId: string): Promise<any> {
+    try {
+      const trustData = this.trustSystem.getTrustScore(participantId);
+      const history = this.trustSystem.getTrustHistory(participantId);
+      
+      // Calculate statistics from history
+      const statistics = {
+        totalTransactions: history.length,
+        successfulTransactions: history.filter((h: any) => h.impact > 0).length,
+        disputes: history.filter((h: any) => h.event === 'dispute_created').length,
+        disputesWon: history.filter((h: any) => h.event === 'dispute_won').length
+      };
+      
+      return {
+        participantId,
+        score: trustData.score,
+        level: trustData.level,
+        benefits: trustData.level.benefits,
+        statistics
+      };
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_trust_score',
+        participantId
+      });
+      throw error;
+    }
+  }
+
+  public async getTrustHistory(participantId: string, limit: number = 10): Promise<any[]> {
+    try {
+      const history = this.trustSystem.getTrustHistory(participantId, limit);
+      
+      return history;
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_trust_history',
+        participantId
+      });
+      throw error;
+    }
+  }
+
+  public async getTrustLeaderboard(limit: number = 10): Promise<any[]> {
+    try {
+      const leaderboard = this.trustSystem.getLeaderboard(limit);
+      
+      return leaderboard;
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_trust_leaderboard',
+        limit
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * System Metrics and Statistics
+   */
+  public async getSystemMetrics(): Promise<any> {
+    try {
+      const metrics = await this.orchestrator.getSystemMetrics();
+      
+      return metrics;
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_system_metrics'
+      });
+      throw error;
+    }
+  }
+
+  public async getTransactionReport(transactionId: string): Promise<any> {
+    try {
+      const report = await this.orchestrator.getTransactionReport(transactionId);
+      
+      return report;
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'get_transaction_report',
+        transactionId
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Cleanup
+   */
+  public async shutdown(): Promise<void> {
+    try {
+      await this.orchestrator.shutdown();
+      this.monitor.logInfo('Consensus system shut down');
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'shutdown'
+      });
+      throw error;
+    }
   }
 }
 

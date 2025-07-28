@@ -1,8 +1,6 @@
 package contracts
 
-import (
-	"time"
-)
+import ()
 
 // Product represents a luxury item in the supply chain
 type Product struct {
@@ -11,7 +9,7 @@ type Product struct {
 	Name               string                 `json:"name"`
 	Type               string                 `json:"type"` // handbag, watch, jewelry, etc.
 	SerialNumber       string                 `json:"serialNumber"`
-	CreatedAt          time.Time              `json:"createdAt"`
+	CreatedAt          string              `json:"createdAt"`
 	CurrentOwner       string                 `json:"currentOwner"`
 	CurrentLocation    string                 `json:"currentLocation"`
 	Status             ProductStatus          `json:"status"`
@@ -26,7 +24,7 @@ type Product struct {
 type DigitalBirthCertificate struct {
 	ProductID          string              `json:"productId"`
 	Brand              string              `json:"brand"`
-	ManufacturingDate  time.Time           `json:"manufacturingDate"`
+	ManufacturingDate  string           `json:"manufacturingDate"`
 	ManufacturingPlace string              `json:"manufacturingPlace"`
 	Craftsman          string              `json:"craftsman"`
 	Materials          []MaterialRecord    `json:"materials"`
@@ -43,7 +41,7 @@ type Material struct {
 	Supplier     string    `json:"supplier"`
 	Batch        string    `json:"batch"`
 	Verification string    `json:"verification"`
-	ReceivedDate time.Time `json:"receivedDate"`
+	ReceivedDate string `json:"receivedDate"`
 }
 
 // MaterialRecord is a simplified version for the birth certificate
@@ -59,7 +57,7 @@ type QualityCheckpoint struct {
 	ID          string    `json:"id"`
 	Stage       string    `json:"stage"`
 	Inspector   string    `json:"inspector"`
-	Date        time.Time `json:"date"`
+	Date        string `json:"date"`
 	Passed      bool      `json:"passed"`
 	Details     string    `json:"details"`
 	PhotoProofs []string  `json:"photoProofs"` // IPFS hashes
@@ -77,11 +75,11 @@ type AuthenticityDetails struct {
 type Ownership struct {
 	ProductID        string            `json:"productId"`
 	OwnerHash        string            `json:"ownerHash"` // SHA256(email + phone + salt)
-	OwnershipDate    time.Time         `json:"ownershipDate"`
+	OwnershipDate    string         `json:"ownershipDate"`
 	PurchaseLocation string            `json:"purchaseLocation"`
 	PurchasePrice    float64           `json:"-"` // Private, not stored on chain
 	TransferCode     string            `json:"transferCode,omitempty"`
-	TransferExpiry   *time.Time        `json:"transferExpiry,omitempty"`
+	TransferExpiry   string         `json:"transferExpiry,omitempty"`
 	Status           OwnershipStatus   `json:"status"`
 	ServiceHistory   []ServiceRecord   `json:"serviceHistory"`
 	PreviousOwners   []PreviousOwner   `json:"previousOwners"`
@@ -90,15 +88,15 @@ type Ownership struct {
 // PreviousOwner represents historical ownership (privacy preserved)
 type PreviousOwner struct {
 	OwnerHash     string    `json:"ownerHash"`
-	OwnershipDate time.Time `json:"ownershipDate"`
-	TransferDate  time.Time `json:"transferDate"`
+	OwnershipDate string `json:"ownershipDate"`
+	TransferDate  string `json:"transferDate"`
 	TransferType  string    `json:"transferType"` // sale, gift, inheritance
 }
 
 // ServiceRecord represents maintenance/service history
 type ServiceRecord struct {
 	ID            string    `json:"id"`
-	Date          time.Time `json:"date"`
+	Date          string `json:"date"`
 	ServiceCenter string    `json:"serviceCenter"`
 	Type          string    `json:"type"` // repair, maintenance, authentication
 	Description   string    `json:"description"`
@@ -113,19 +111,19 @@ type Transfer struct {
 	From             string         `json:"from"`
 	To               string         `json:"to"`
 	TransferType     TransferType   `json:"transferType"`
-	InitiatedAt      time.Time      `json:"initiatedAt"`
-	CompletedAt      *time.Time     `json:"completedAt,omitempty"`
+	InitiatedAt      string      `json:"initiatedAt"`
+	CompletedAt      string      `json:"completedAt,omitempty"`
 	Status           TransferStatus `json:"status"`
 	ConsensusDetails ConsensusInfo  `json:"consensusDetails"`
 }
 
 // ConsensusInfo contains 2-Check consensus information
 type ConsensusInfo struct {
-	SenderConfirmed   bool       `json:"senderConfirmed"`
-	ReceiverConfirmed bool       `json:"receiverConfirmed"`
-	SenderTimestamp   *time.Time `json:"senderTimestamp,omitempty"`
-	ReceiverTimestamp *time.Time `json:"receiverTimestamp,omitempty"`
-	TimeoutAt         time.Time  `json:"timeoutAt"`
+	SenderConfirmed   bool    `json:"senderConfirmed"`
+	ReceiverConfirmed bool    `json:"receiverConfirmed"`
+	SenderTimestamp   string  `json:"senderTimestamp,omitempty"`
+	ReceiverTimestamp string  `json:"receiverTimestamp,omitempty"`
+	TimeoutAt         string  `json:"timeoutAt"`
 }
 
 // Enums

@@ -33,9 +33,9 @@ type Transaction struct {
 	State           TransactionState `json:"state"`
 	ItemType        string           `json:"itemType"`
 	ItemID          string           `json:"itemId"`
-	Timestamp       time.Time        `json:"timestamp"`
-	SentTimestamp   *time.Time       `json:"sentTimestamp,omitempty"`
-	ReceivedTimestamp *time.Time     `json:"receivedTimestamp,omitempty"`
+	Timestamp       string           `json:"timestamp"`
+	SentTimestamp   string           `json:"sentTimestamp,omitempty"`
+	ReceivedTimestamp string         `json:"receivedTimestamp,omitempty"`
 	Metadata        map[string]string `json:"metadata"`
 	DisputeReason   string           `json:"disputeReason,omitempty"`
 	Evidence        []Evidence       `json:"evidence,omitempty"`
@@ -45,7 +45,7 @@ type Transaction struct {
 type Evidence struct {
 	Type        string    `json:"type"`
 	SubmittedBy string    `json:"submittedBy"`
-	Timestamp   time.Time `json:"timestamp"`
+	Timestamp   string    `json:"timestamp"`
 	Hash        string    `json:"hash"`
 	Verified    bool      `json:"verified"`
 }
@@ -57,14 +57,14 @@ type TrustScore struct {
 	TotalTransactions int      `json:"totalTransactions"`
 	SuccessfulTx     int       `json:"successfulTransactions"`
 	DisputedTx       int       `json:"disputedTransactions"`
-	LastUpdated      time.Time `json:"lastUpdated"`
+	LastUpdated      string `json:"lastUpdated"`
 }
 
 // ConsensusEvent represents an event in the consensus process
 type ConsensusEvent struct {
 	TransactionID string                 `json:"transactionId"`
 	EventType     string                 `json:"eventType"`
-	Timestamp     time.Time              `json:"timestamp"`
+	Timestamp     string              `json:"timestamp"`
 	Payload       map[string]interface{} `json:"payload"`
 }
 
@@ -80,7 +80,7 @@ func (c *ConsensusContract) InitLedger(ctx contractapi.TransactionContextInterfa
 			TotalTransactions: 0,
 			SuccessfulTx:     0,
 			DisputedTx:       0,
-			LastUpdated:      time.Now(),
+			LastUpdated:      time.Now().Format(time.RFC3339),
 		}
 		
 		scoreJSON, err := json.Marshal(trustScore)
@@ -127,7 +127,7 @@ func (c *ConsensusContract) SubmitTransaction(ctx contractapi.TransactionContext
 		State:     StateInitiated,
 		ItemType:  itemType,
 		ItemID:    itemID,
-		Timestamp: time.Now(),
+		Timestamp: time.Now().Format(time.RFC3339),
 		Metadata:  metadataMap,
 	}
 	
@@ -145,7 +145,7 @@ func (c *ConsensusContract) SubmitTransaction(ctx contractapi.TransactionContext
 	event := ConsensusEvent{
 		TransactionID: id,
 		EventType:     "TRANSACTION_INITIATED",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"sender":   sender,
 			"receiver": receiver,
@@ -183,9 +183,9 @@ func (c *ConsensusContract) ConfirmSent(ctx contractapi.TransactionContextInterf
 	}
 	
 	// Update transaction
-	now := time.Now()
+	now := time.Now().Format(time.RFC3339)
 	tx.State = StateSent
-	tx.SentTimestamp = &now
+	tx.SentTimestamp = now
 	
 	err = c.putTransaction(ctx, tx)
 	if err != nil {
@@ -196,7 +196,7 @@ func (c *ConsensusContract) ConfirmSent(ctx contractapi.TransactionContextInterf
 	event := ConsensusEvent{
 		TransactionID: transactionID,
 		EventType:     "CONFIRMATION_SENT",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"sender": sender,
 		},
@@ -225,9 +225,9 @@ func (c *ConsensusContract) ConfirmReceived(ctx contractapi.TransactionContextIn
 	}
 	
 	// Update transaction
-	now := time.Now()
+	now := time.Now().Format(time.RFC3339)
 	tx.State = StateReceived
-	tx.ReceivedTimestamp = &now
+	tx.ReceivedTimestamp = now
 	
 	err = c.putTransaction(ctx, tx)
 	if err != nil {
@@ -250,7 +250,7 @@ func (c *ConsensusContract) ConfirmReceived(ctx contractapi.TransactionContextIn
 	event := ConsensusEvent{
 		TransactionID: transactionID,
 		EventType:     "CONFIRMATION_RECEIVED",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"receiver": receiver,
 		},
@@ -297,7 +297,7 @@ func (c *ConsensusContract) RaiseDispute(ctx contractapi.TransactionContextInter
 	event := ConsensusEvent{
 		TransactionID: transactionID,
 		EventType:     "DISPUTE_RAISED",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"initiator": initiator,
 			"reason":    reason,
@@ -325,7 +325,7 @@ func (c *ConsensusContract) SubmitEvidence(ctx contractapi.TransactionContextInt
 	evidence := Evidence{
 		Type:        evidenceType,
 		SubmittedBy: submittedBy,
-		Timestamp:   time.Now(),
+		Timestamp:   time.Now().Format(time.RFC3339),
 		Hash:        hash,
 		Verified:    false, // Would be verified by off-chain process
 	}
@@ -341,7 +341,7 @@ func (c *ConsensusContract) SubmitEvidence(ctx contractapi.TransactionContextInt
 	event := ConsensusEvent{
 		TransactionID: transactionID,
 		EventType:     "EVIDENCE_SUBMITTED",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"type":        evidenceType,
 			"submittedBy": submittedBy,
@@ -451,7 +451,7 @@ func (c *ConsensusContract) validateConsensus(ctx contractapi.TransactionContext
 	event := ConsensusEvent{
 		TransactionID: tx.ID,
 		EventType:     "CONSENSUS_ACHIEVED",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"sender":   tx.Sender,
 			"receiver": tx.Receiver,
@@ -465,10 +465,10 @@ func (c *ConsensusContract) autoConfirmTransaction(ctx contractapi.TransactionCo
 	tx *Transaction, reason string) error {
 	
 	// Auto-confirm based on high trust
-	now := time.Now()
+	now := time.Now().Format(time.RFC3339)
 	tx.State = StateValidated
-	tx.SentTimestamp = &now
-	tx.ReceivedTimestamp = &now
+	tx.SentTimestamp = now
+	tx.ReceivedTimestamp = now
 	
 	err := c.putTransaction(ctx, tx)
 	if err != nil {
@@ -479,7 +479,7 @@ func (c *ConsensusContract) autoConfirmTransaction(ctx contractapi.TransactionCo
 	event := ConsensusEvent{
 		TransactionID: tx.ID,
 		EventType:     "AUTO_CONFIRMATION",
-		Timestamp:     time.Now(),
+		Timestamp:     time.Now().Format(time.RFC3339),
 		Payload: map[string]interface{}{
 			"reason": reason,
 			"party":  tx.Sender,
@@ -505,7 +505,7 @@ func (c *ConsensusContract) getTrustScore(ctx contractapi.TransactionContextInte
 			TotalTransactions: 0,
 			SuccessfulTx:     0,
 			DisputedTx:       0,
-			LastUpdated:      time.Now(),
+			LastUpdated:      time.Now().Format(time.RFC3339),
 		}
 		return score, nil
 	}
@@ -536,7 +536,7 @@ func (c *ConsensusContract) updateTrustScores(ctx contractapi.TransactionContext
 		senderScore.DisputedTx++
 		senderScore.Score = float64(senderScore.SuccessfulTx) / float64(senderScore.TotalTransactions)
 	}
-	senderScore.LastUpdated = time.Now()
+	senderScore.LastUpdated = time.Now().Format(time.RFC3339)
 	
 	senderJSON, err := json.Marshal(senderScore)
 	if err != nil {
@@ -562,7 +562,7 @@ func (c *ConsensusContract) updateTrustScores(ctx contractapi.TransactionContext
 		receiverScore.DisputedTx++
 		receiverScore.Score = float64(receiverScore.SuccessfulTx) / float64(receiverScore.TotalTransactions)
 	}
-	receiverScore.LastUpdated = time.Now()
+	receiverScore.LastUpdated = time.Now().Format(time.RFC3339)
 	
 	receiverJSON, err := json.Marshal(receiverScore)
 	if err != nil {

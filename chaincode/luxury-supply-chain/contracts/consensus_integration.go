@@ -30,7 +30,7 @@ func (ci *ConsensusIntegration) SubmitToConsensus(ctx contractapi.TransactionCon
 		"transferId":   transfer.ID,
 		"productId":    transfer.ProductID,
 		"transferType": string(transfer.TransferType),
-		"initiatedAt":  transfer.InitiatedAt.Format("2006-01-02T15:04:05Z"),
+		"initiatedAt":  transfer.InitiatedAt,
 	}
 
 	metadataJSON, err := json.Marshal(metadata)
