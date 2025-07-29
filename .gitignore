@@ -36,3 +36,6 @@ test-phase2-integration.js
 test-sdk-compilation.sh
 validate-phase1.sh
 /backend/erp-integration/node_modules
+/backend/customer/node_modules
+/frontend/web-app/node_modules
+/frontend/web-app/.next

@@ -1,0 +1,81 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-inter: 'Inter', system-ui, sans-serif;
+    --font-playfair: 'Playfair Display', serif;
+  }
+
+  body {
+    @apply antialiased;
+  }
+
+  /* Custom scrollbar */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-luxury-gray-light;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-luxury-gold rounded-full;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-luxury-gold-dark;
+  }
+}
+
+@layer components {
+  /* Luxury button styles */
+  .btn-luxury {
+    @apply px-6 py-3 bg-luxury-gold text-luxury-black font-medium rounded-md 
+           hover:bg-luxury-gold-dark transition-colors duration-200
+           focus:outline-none focus:ring-2 focus:ring-luxury-gold focus:ring-offset-2;
+  }
+
+  .btn-luxury-outline {
+    @apply px-6 py-3 border-2 border-luxury-gold text-luxury-gold font-medium rounded-md
+           hover:bg-luxury-gold hover:text-luxury-black transition-all duration-200
+           focus:outline-none focus:ring-2 focus:ring-luxury-gold focus:ring-offset-2;
+  }
+
+  /* Card styles */
+  .card-luxury {
+    @apply bg-white rounded-lg shadow-lg border border-luxury-gray-light
+           hover:shadow-xl transition-shadow duration-300;
+  }
+
+  /* Input styles */
+  .input-luxury {
+    @apply w-full px-4 py-2 border border-luxury-gray-light rounded-md
+           focus:ring-2 focus:ring-luxury-gold focus:border-transparent
+           placeholder-gray-400 transition-all duration-200;
+  }
+}
+
+@layer utilities {
+  /* Text gradient for luxury branding */
+  .text-gradient-luxury {
+    @apply bg-gradient-to-r from-luxury-gold to-luxury-gold-dark bg-clip-text text-transparent;
+  }
+
+  /* Animations */
+  .animate-shimmer {
+    animation: shimmer 2s linear infinite;
+  }
+
+  @keyframes shimmer {
+    0% {
+      background-position: -1000px 0;
+    }
+    100% {
+      background-position: 1000px 0;
+    }
+  }
+}

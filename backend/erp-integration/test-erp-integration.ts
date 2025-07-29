@@ -56,6 +56,13 @@ async function testERPIntegration() {
     status: 'APPROVED'
   };
   
+  // First, get the adapter and create the PO in the mock ERP
+  const adapter = (erpService as any).adapters.get('italianleather');
+  if (adapter) {
+    await adapter.createPurchaseOrder(mockPO);
+    console.log('Purchase order created in ERP');
+  }
+  
   // This will trigger automatic blockchain transaction creation
   const txId = await erpService.createTransactionFromPO('italianleather', mockPO.poNumber);
   console.log(`Blockchain transaction created: ${txId}`);

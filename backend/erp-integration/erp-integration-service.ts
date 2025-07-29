@@ -245,19 +245,23 @@ export class ERPIntegrationService extends EventEmitter {
    * Setup periodic sync
    */
   private setupSync(orgId: string, intervalMinutes: number): void {
+    // Ensure interval is reasonable (max 24 hours)
+    const maxInterval = 24 * 60; // 24 hours in minutes
+    const safeInterval = Math.min(intervalMinutes, maxInterval);
+    
     const interval = setInterval(async () => {
       try {
         const adapter = this.adapters.get(orgId);
         if (adapter) {
           const result = await adapter.performIncrementalSync(
-            new Date(Date.now() - intervalMinutes * 60 * 1000)
+            new Date(Date.now() - safeInterval * 60 * 1000)
           );
           console.log(`Sync completed for ${orgId}:`, result);
         }
       } catch (error) {
         console.error(`Sync failed for ${orgId}:`, error);
       }
-    }, intervalMinutes * 60 * 1000);
+    }, safeInterval * 60 * 1000);
     
     this.syncIntervals.set(orgId, interval);
   }
