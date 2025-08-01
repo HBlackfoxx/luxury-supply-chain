@@ -7,6 +7,7 @@ import { GatewayManager } from '../gateway/src/fabric/gateway-manager';
 import { TransactionHandler } from '../gateway/src/fabric/transaction-handler';
 import { EventListenerManager } from '../gateway/src/fabric/event-listener';
 import { FabricMonitor } from '../gateway/src/monitoring/fabric-monitor';
+import { notificationService } from '../services/notification-service';
 
 import { TransactionStateManager } from '../../consensus/2check/core/state/state-manager';
 import { ValidationEngine } from '../../consensus/2check/core/validation/validation-engine';
@@ -36,8 +37,8 @@ export class ConsensusSystem {
     this.transactionHandler = new TransactionHandler();
     this.eventListener = new EventListenerManager();
     this.monitor = new FabricMonitor({
-      enablePrometheus: true,
-      prometheusPort: 9090,
+      enablePrometheus: false,
+      prometheusPort: parseInt(process.env.METRICS_PORT || '9090'),
       logLevel: 'info'
     });
 
@@ -327,14 +328,23 @@ export class ConsensusSystem {
   }
 
   /**
-   * Send notification (placeholder - would integrate with notification service)
+   * Send notification through notification service
    */
   private async sendNotification(data: any): Promise<void> {
-    console.log('Notification required:', data);
-    // In production, this would:
-    // - Send emails via SendGrid/SES
-    // - Send SMS via Twilio
-    // - Send in-app notifications via WebSocket
+    try {
+      await notificationService.sendNotification(data);
+      
+      this.monitor.logInfo('Notification sent', {
+        type: data.type,
+        recipients: data.recipients.length,
+        transactionId: data.transaction?.id
+      });
+    } catch (error) {
+      this.monitor.logError(error as Error, {
+        operation: 'send_notification',
+        notificationType: data.type
+      });
+    }
   }
 
   /**
@@ -556,6 +566,13 @@ export class ConsensusSystem {
     }
   }
 
+  /**
+   * Get state manager for direct access
+   */
+  public getStateManager() {
+    return this.stateManager;
+  }
+  
   public async getTransactionReport(transactionId: string): Promise<any> {
     try {
       const report = await this.orchestrator.getTransactionReport(transactionId);

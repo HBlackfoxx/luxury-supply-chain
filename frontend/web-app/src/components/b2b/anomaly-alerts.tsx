@@ -1,9 +1,9 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
 import { AlertTriangle, Shield, TrendingUp, Clock } from 'lucide-react'
 import { useState } from 'react'
+import { useApi } from '@/hooks/use-api'
 
 interface Anomaly {
   id: string
@@ -17,33 +17,21 @@ interface Anomaly {
 
 export function AnomalyAlerts() {
   const [dismissed, setDismissed] = useState<Set<string>>(new Set())
+  const api = useApi()
 
-  const { data: anomalies } = useQuery({
+  const { data: anomalies } = useQuery<Anomaly[]>({
     queryKey: ['anomalies'],
     queryFn: async () => {
-      // In production, this would be a real endpoint
-      // For now, using mock data to show UI
-      return [
-        {
-          id: '1',
-          type: 'timing',
-          severity: 'medium',
-          transactionId: 'TX-123',
-          description: 'Unusually fast confirmation from ItalianLeather (2 min vs avg 2 hours)',
-          detectedAt: new Date().toISOString(),
-          recommendedAction: 'Review transaction details'
-        },
-        {
-          id: '2',
-          type: 'value',
-          severity: 'high',
-          transactionId: 'TX-456',
-          description: 'Transaction value 300% higher than usual for this item type',
-          detectedAt: new Date(Date.now() - 3600000).toISOString(),
-          recommendedAction: 'Verify pricing and quantity'
-        }
-      ] as Anomaly[]
+      if (!api) return []
+      try {
+        const { data } = await api.get<Anomaly[]>('/api/consensus/anomalies/active')
+        return data
+      } catch (error) {
+        // Return empty array if endpoint doesn't exist yet
+        return []
+      }
     },
+    enabled: !!api,
     refetchInterval: 60000 // Check every minute
   })
 

@@ -41,6 +41,7 @@ export class ConsensusAPI {
     this.router.use(this.consensusMiddleware.bind(this));
 
     // Transaction routes
+    this.router.get('/transactions', this.getTransactions.bind(this));
     this.router.post('/transactions', this.createTransaction.bind(this));
     this.router.get('/transactions/:id', this.getTransaction.bind(this));
     this.router.post('/transactions/:id/confirm-sent', this.confirmSent.bind(this));
@@ -81,28 +82,47 @@ export class ConsensusAPI {
     this.router.post('/analytics/report', this.getPerformanceReport.bind(this));
     this.router.get('/analytics/party/:partyId', this.getPartyAnalytics.bind(this));
     this.router.get('/analytics/insights', this.getInsights.bind(this));
+    
+    // Anomaly routes
+    this.router.get('/anomalies/active', this.getActiveAnomalies.bind(this));
   }
 
   /**
-   * Auth middleware (simplified for demo)
+   * Auth middleware
    */
   private authMiddleware(req: ApiRequest, res: Response, next: NextFunction): void {
-    // In production, validate JWT token
     const authHeader = req.headers.authorization;
     
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
-      res.status(401).json({ error: 'Unauthorized' });
+      res.status(401).json({ error: 'Unauthorized - No token provided' });
       return;
     }
 
-    // Mock user from token
-    req.user = {
-      id: req.headers['x-user-id'] as string || 'user1',
-      orgId: req.headers['x-org-id'] as string || 'luxebags',
-      role: req.headers['x-user-role'] as string || 'user'
-    };
+    const token = authHeader.substring(7);
+    
+    try {
+      // In production, verify JWT properly with the auth service
+      // For now, we'll trust the headers if token is present
+      const orgId = req.headers['x-org-id'] as string;
+      const userId = req.headers['x-user-id'] as string;
+      const role = req.headers['x-user-role'] as string;
 
-    next();
+      if (!orgId || !userId) {
+        res.status(401).json({ error: 'Invalid authentication headers' });
+        return;
+      }
+
+      req.user = {
+        id: userId,
+        orgId: orgId,
+        role: role || 'user'
+      };
+
+      next();
+    } catch (error) {
+      res.status(401).json({ error: 'Invalid token' });
+      return;
+    }
   }
 
   /**
@@ -143,6 +163,62 @@ export class ConsensusAPI {
     } catch (error) {
       res.status(500).json({ 
         error: 'Failed to create transaction',
+        message: (error as Error).message
+      });
+    }
+  }
+
+  /**
+   * Get transactions with filters
+   */
+  private async getTransactions(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { type, status } = req.query;
+      const participantId = req.user!.orgId;
+      
+      // Get state manager to access transactions
+      const stateManager = this.consensusSystem.getStateManager();
+      const allTransactions = Array.from(stateManager.getTransactions().values()) as Transaction[];
+      
+      // Filter transactions where user is either sender or receiver
+      let filtered = allTransactions.filter(tx => 
+        tx.sender === participantId || tx.receiver === participantId
+      );
+      
+      // Apply type filter
+      if (type === 'SENT') {
+        filtered = filtered.filter(tx => tx.sender === participantId);
+      } else if (type === 'RECEIVED') {
+        filtered = filtered.filter(tx => tx.receiver === participantId);
+      }
+      
+      // Apply status filter
+      if (status && status !== 'all') {
+        filtered = filtered.filter(tx => tx.state === status);
+      }
+      
+      // Sort by creation date (newest first)
+      filtered.sort((a, b) => new Date(b.created).getTime() - new Date(a.created).getTime());
+      
+      // Map to frontend format
+      const transactions = filtered.map(tx => ({
+        id: tx.id,
+        type: tx.sender === participantId ? 'SENT' : 'RECEIVED',
+        itemId: tx.itemId,
+        itemDescription: tx.metadata?.description || `Item ${tx.itemId}`,
+        partner: tx.sender === participantId ? tx.receiver : tx.sender,
+        value: tx.value,
+        status: tx.state,
+        createdAt: tx.created instanceof Date ? tx.created.toISOString() : tx.created,
+        validatedAt: tx.state === 'VALIDATED' && tx.receiverConfirmed 
+          ? (tx.receiverConfirmed instanceof Date ? tx.receiverConfirmed.toISOString() : tx.receiverConfirmed)
+          : undefined
+      }));
+      
+      res.json(transactions);
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get transactions',
         message: (error as Error).message
       });
     }
@@ -314,14 +390,53 @@ export class ConsensusAPI {
   private async addEvidence(req: ApiRequest, res: Response): Promise<void> {
     try {
       const { id } = req.params;
-      const { type, description, data } = req.body;
+      const { type, description, data, files } = req.body;
 
-      // This would be implemented through the dispute resolution system
-      // For now, acknowledge the request
+      if (!type || !description) {
+        res.status(400).json({ 
+          error: 'Missing required fields: type, description' 
+        });
+        return;
+      }
+
+      // Get transaction to find dispute
+      const report = await req.consensusSystem!.getTransactionReport(id);
+      if (!report.transaction.dispute) {
+        res.status(404).json({ error: 'No dispute found for this transaction' });
+        return;
+      }
+
+      // Add evidence through consensus system
+      const evidenceId = `EVD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      
+      // Store evidence data (in production, this would go to object storage)
+      const evidence = {
+        id: evidenceId,
+        submittedBy: req.user!.orgId,
+        type: type as 'photo' | 'document' | 'tracking' | 'testimony' | 'system_log',
+        description,
+        data: {
+          ...data,
+          files: files || []
+        }
+      };
+
+      // Update transaction dispute with new evidence
+      const transaction = req.consensusSystem!.getStateManager().getTransaction(id);
+      if (transaction && transaction.dispute) {
+        if (!transaction.dispute.evidence) {
+          transaction.dispute.evidence = [];
+        }
+        transaction.dispute.evidence.push({
+          ...evidence,
+          submittedAt: new Date()
+        });
+      }
+
       res.json({
         success: true,
-        message: 'Evidence submission acknowledged',
-        evidenceId: `EVD-${Date.now()}`
+        message: 'Evidence submitted successfully',
+        evidenceId
       });
     } catch (error) {
       res.status(400).json({ 
@@ -344,12 +459,85 @@ export class ConsensusAPI {
       const { id } = req.params;
       const { decision, reasoning, actions } = req.body;
 
-      // This would be implemented through the dispute resolution system
-      // For now, acknowledge the request
+      if (!decision || !reasoning) {
+        res.status(400).json({ 
+          error: 'Missing required fields: decision, reasoning' 
+        });
+        return;
+      }
+
+      // Get transaction
+      const transaction = req.consensusSystem!.getStateManager().getTransaction(id);
+      if (!transaction) {
+        res.status(404).json({ error: 'Transaction not found' });
+        return;
+      }
+
+      if (!transaction.dispute || transaction.state !== TransactionState.DISPUTED) {
+        res.status(400).json({ error: 'Transaction is not in disputed state' });
+        return;
+      }
+
+      // Update dispute status
+      transaction.dispute.status = 'RESOLVED';
+      
+      // Determine next state based on decision
+      let nextState: TransactionState;
+      switch (decision) {
+        case 'favor_sender':
+          nextState = TransactionState.VALIDATED;
+          break;
+        case 'favor_receiver':
+          nextState = TransactionState.CANCELLED;
+          break;
+        case 'escalate':
+          nextState = TransactionState.ESCALATED;
+          break;
+        default:
+          nextState = TransactionState.RESOLVED;
+      }
+
+      // Transition to resolved state
+      await req.consensusSystem!.getStateManager().transitionState(
+        id,
+        nextState,
+        req.user!.id,
+        {
+          reason: `Dispute resolved: ${decision}`,
+          evidence: {
+            decision,
+            reasoning,
+            actions,
+            resolvedAt: new Date()
+          }
+        }
+      );
+
+      // Update trust scores based on decision
+      if (decision === 'favor_sender') {
+        // Negative impact on receiver's trust
+        this.emit('trust:update_required', {
+          participant: transaction.receiver,
+          action: 'dispute_lost',
+          value: -10
+        });
+      } else if (decision === 'favor_receiver') {
+        // Negative impact on sender's trust
+        this.emit('trust:update_required', {
+          participant: transaction.sender,
+          action: 'dispute_lost',
+          value: -10
+        });
+      }
+
       res.json({
         success: true,
-        message: 'Dispute resolution initiated',
-        resolutionId: `RES-${Date.now()}`
+        message: 'Dispute resolved successfully',
+        resolution: {
+          decision,
+          newState: nextState,
+          timestamp: new Date()
+        }
       });
     } catch (error) {
       res.status(400).json({ 
@@ -799,6 +987,21 @@ export class ConsensusAPI {
     } catch (error) {
       res.status(500).json({ 
         error: 'Failed to get insights',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
+   * Get active anomalies
+   */
+  private async getActiveAnomalies(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      // For now, return empty array as anomaly detection is not yet implemented
+      res.json([]);
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get anomalies',
         message: (error as Error).message
       });
     }

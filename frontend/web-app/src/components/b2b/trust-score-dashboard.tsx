@@ -1,8 +1,9 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
 import { TrendingUp, TrendingDown, Minus, Users, AlertCircle } from 'lucide-react'
+import { useAuthStore } from '@/stores/auth-store'
+import { useApi } from '@/hooks/use-api'
 
 interface TrustScore {
   partnerId: string
@@ -15,12 +16,14 @@ interface TrustScore {
 }
 
 export function TrustScoreDashboard() {
+  const { user } = useAuthStore()
+  const api = useApi()
+  
   const { data: trustScores, isLoading } = useQuery<TrustScore[]>({
-    queryKey: ['trust-scores'],
+    queryKey: ['trust-scores', user?.organization],
     queryFn: async () => {
-      // In production, get from auth
-      const orgId = 'luxebags'
-      const { data } = await axios.get(`/api/consensus/trust/${orgId}/history`)
+      if (!user?.organization || !api) return []
+      const { data } = await api.get(`/api/consensus/trust/${user.organization}/history`)
       
       // Transform the response to match TrustScore interface
       if (!data?.relationships) return []
@@ -35,16 +38,17 @@ export function TrustScoreDashboard() {
         lastInteraction: rel.lastInteraction || new Date().toISOString()
       }))
     },
+    enabled: !!user?.organization && !!api,
   })
 
   const { data: myScore } = useQuery({
-    queryKey: ['my-trust-score'],
+    queryKey: ['my-trust-score', user?.organization],
     queryFn: async () => {
-      // In production, get from auth
-      const orgId = 'luxebags'
-      const { data } = await axios.get(`/api/consensus/trust/${orgId}`)
+      if (!user?.organization || !api) return null
+      const { data } = await api.get(`/api/consensus/trust/${user.organization}`)
       return data
     },
+    enabled: !!user?.organization && !!api,
   })
 
   if (isLoading) {

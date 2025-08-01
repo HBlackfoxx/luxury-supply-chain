@@ -1,6 +1,7 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useRouter } from 'next/navigation'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { PendingActions } from '@/components/b2b/pending-actions'
 import { TrustScoreDashboard } from '@/components/b2b/trust-score-dashboard'
@@ -9,46 +10,58 @@ import { BatchOperations } from '@/components/b2b/batch-operations'
 import { AnomalyAlerts } from '@/components/b2b/anomaly-alerts'
 import { PerformanceCharts } from '@/components/b2b/performance-charts'
 import { EmergencyBanner } from '@/components/b2b/emergency-banner'
+import { Header } from '@/components/layout/header'
 import { useAuthStore } from '@/stores/auth-store'
 import { Package, TrendingUp, History, Layers, BarChart3 } from 'lucide-react'
 
 export default function B2BDashboard() {
-  const { user } = useAuthStore()
+  const router = useRouter()
+  const { user, isAuthenticated } = useAuthStore()
   const [activeTab, setActiveTab] = useState('pending')
 
+  useEffect(() => {
+    if (!isAuthenticated || !user) {
+      router.push('/login')
+    }
+  }, [isAuthenticated, user, router])
+
+  // These would be fetched from API in production
   const stats = [
     {
       label: 'Pending Actions',
-      value: '12',
+      value: '0', // Will be updated by actual API calls
       icon: Package,
       color: 'text-orange-600',
       bg: 'bg-orange-100',
     },
     {
       label: 'Trust Score',
-      value: '92%',
+      value: '--%',
       icon: TrendingUp,
       color: 'text-green-600',
       bg: 'bg-green-100',
     },
     {
       label: 'This Month',
-      value: '156',
+      value: '0',
       icon: History,
       color: 'text-blue-600',
       bg: 'bg-blue-100',
     },
     {
       label: 'Active Batches',
-      value: '3',
+      value: '0',
       icon: Layers,
       color: 'text-purple-600',
       bg: 'bg-purple-100',
     },
   ]
 
+  if (!user) return null
+
   return (
     <>
+      <Header />
       <EmergencyBanner />
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}

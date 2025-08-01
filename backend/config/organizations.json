@@ -1,0 +1,66 @@
+{
+  "organizations": {
+    "luxebags": {
+      "name": "LuxeBags",
+      "type": "brand",
+      "domain": "luxebags.com",
+      "apiEndpoint": "http://localhost:4001",
+      "fabricMSP": "LuxebagsMSP",
+      "channels": ["luxury-supply-chain"],
+      "chaincodes": ["luxury-supply-chain", "2check-consensus"],
+      "branding": {
+        "primaryColor": "#D4AF37",
+        "logo": "/logos/luxebags.png"
+      }
+    },
+    "italianleather": {
+      "name": "Italian Leather Co",
+      "type": "supplier",
+      "domain": "italianleather.com",
+      "apiEndpoint": "http://localhost:4002",
+      "fabricMSP": "ItalianleatherMSP",
+      "channels": ["luxury-supply-chain"],
+      "chaincodes": ["luxury-supply-chain", "2check-consensus"],
+      "branding": {
+        "primaryColor": "#8B4513",
+        "logo": "/logos/italianleather.png"
+      }
+    },
+    "craftworkshop": {
+      "name": "Craft Workshop",
+      "type": "manufacturer",
+      "domain": "craftworkshop.com",
+      "apiEndpoint": "http://localhost:4003",
+      "fabricMSP": "CraftworkshopMSP",
+      "channels": ["luxury-supply-chain"],
+      "chaincodes": ["luxury-supply-chain", "2check-consensus"],
+      "branding": {
+        "primaryColor": "#4169E1",
+        "logo": "/logos/craftworkshop.png"
+      }
+    },
+    "luxuryretail": {
+      "name": "Luxury Retail",
+      "type": "retailer",
+      "domain": "luxuryretail.com",
+      "apiEndpoint": "http://localhost:4004",
+      "fabricMSP": "LuxuryretailMSP",
+      "channels": ["luxury-supply-chain"],
+      "chaincodes": ["luxury-supply-chain", "2check-consensus"],
+      "branding": {
+        "primaryColor": "#FF69B4",
+        "logo": "/logos/luxuryretail.png"
+      }
+    }
+  },
+  "networkConfig": {
+    "channelName": "luxury-supply-chain",
+    "chaincodes": {
+      "supplyChain": "luxury-supply-chain",
+      "consensus": "2check-consensus"
+    },
+    "orderers": [
+      "orderer1.orderer.luxe-bags.luxury:7050"
+    ]
+  }
+}

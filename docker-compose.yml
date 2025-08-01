@@ -1,0 +1,127 @@
+version: '3.8'
+
+services:
+  # LuxeBags Backend (Brand)
+  luxebags-backend:
+    build: ./backend
+    container_name: luxebags-backend
+    ports:
+      - "4001:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - BRAND_ID=luxebags
+      - ORG_ID=luxebags
+      - USER_ID=admin
+      - JWT_SECRET=luxebags-secret-change-in-production
+      - CONSENSUS_API_PORT=4000
+      - CUSTOMER_API_PORT=3002
+    volumes:
+      - ./backend:/app
+      - ./network/organizations:/app/fabric/organizations:ro
+    networks:
+      - luxury-network
+    depends_on:
+      - fabric-network
+
+  # Italian Leather Backend (Supplier)
+  italianleather-backend:
+    build: ./backend
+    container_name: italianleather-backend
+    ports:
+      - "4002:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - BRAND_ID=italianleather
+      - ORG_ID=italianleather
+      - USER_ID=admin
+      - JWT_SECRET=italianleather-secret-change-in-production
+      - CONSENSUS_API_PORT=4000
+      - CUSTOMER_API_PORT=3002
+    volumes:
+      - ./backend:/app
+      - ./network/organizations:/app/fabric/organizations:ro
+    networks:
+      - luxury-network
+    depends_on:
+      - fabric-network
+
+  # Craft Workshop Backend (Manufacturer)
+  craftworkshop-backend:
+    build: ./backend
+    container_name: craftworkshop-backend
+    ports:
+      - "4003:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - BRAND_ID=craftworkshop
+      - ORG_ID=craftworkshop
+      - USER_ID=admin
+      - JWT_SECRET=craftworkshop-secret-change-in-production
+      - CONSENSUS_API_PORT=4000
+      - CUSTOMER_API_PORT=3002
+    volumes:
+      - ./backend:/app
+      - ./network/organizations:/app/fabric/organizations:ro
+    networks:
+      - luxury-network
+    depends_on:
+      - fabric-network
+
+  # Luxury Retail Backend (Retailer)
+  luxuryretail-backend:
+    build: ./backend
+    container_name: luxuryretail-backend
+    ports:
+      - "4004:4000"
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - BRAND_ID=luxuryretail
+      - ORG_ID=luxuryretail
+      - USER_ID=admin
+      - JWT_SECRET=luxuryretail-secret-change-in-production
+      - CONSENSUS_API_PORT=4000
+      - CUSTOMER_API_PORT=3002
+    volumes:
+      - ./backend:/app
+      - ./network/organizations:/app/fabric/organizations:ro
+    networks:
+      - luxury-network
+    depends_on:
+      - fabric-network
+
+  # Unified Frontend
+  frontend:
+    build: ./frontend/web-app
+    container_name: luxury-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_LUXEBAGS_API=http://localhost:4001
+      - NEXT_PUBLIC_ITALIANLEATHER_API=http://localhost:4002
+      - NEXT_PUBLIC_CRAFTWORKSHOP_API=http://localhost:4003
+      - NEXT_PUBLIC_LUXURYRETAIL_API=http://localhost:4004
+    networks:
+      - luxury-network
+    depends_on:
+      - luxebags-backend
+      - italianleather-backend
+      - craftworkshop-backend
+      - luxuryretail-backend
+
+  # Placeholder for fabric network (already running)
+  fabric-network:
+    image: alpine:latest
+    container_name: fabric-placeholder
+    command: tail -f /dev/null
+    networks:
+      - luxury-network
+
+networks:
+  luxury-network:
+    driver: bridge
+    name: luxury-supply-chain-network

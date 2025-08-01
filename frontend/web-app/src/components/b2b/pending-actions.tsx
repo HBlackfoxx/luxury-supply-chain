@@ -4,8 +4,9 @@ import { useState } from 'react'
 import { CheckCircle, XCircle, Clock, Package, AlertTriangle } from 'lucide-react'
 import { format } from 'date-fns'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import axios from 'axios'
 import { DisputeModal } from './dispute-modal'
+import { useAuthStore } from '@/stores/auth-store'
+import { useApi } from '@/hooks/use-api'
 
 interface PendingTransaction {
   id: string
@@ -20,23 +21,26 @@ interface PendingTransaction {
 
 export function PendingActions() {
   const queryClient = useQueryClient()
+  const { user } = useAuthStore()
   const [selectedDispute, setSelectedDispute] = useState<PendingTransaction | null>(null)
+  const api = useApi()
 
   // Fetch pending transactions
   const { data: pendingTransactions, isLoading } = useQuery({
-    queryKey: ['pending-transactions'],
+    queryKey: ['pending-transactions', user?.organization],
     queryFn: async () => {
-      // Get user's org ID (in production, from auth token)
-      const orgId = 'luxebags' // This should come from auth
-      const { data } = await axios.get<PendingTransaction[]>(`/api/consensus/transactions/pending/${orgId}`)
+      if (!user?.organization || !api) return []
+      const { data } = await api.get<PendingTransaction[]>(`/api/consensus/transactions/pending/${user.organization}`)
       return data
     },
+    enabled: !!user?.organization && !!api,
   })
 
   // Confirm sent mutation
   const confirmSentMutation = useMutation({
     mutationFn: async ({ txId, evidence }: { txId: string; evidence: any }) => {
-      const { data } = await axios.post(`/api/consensus/transactions/${txId}/confirm-sent`, {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/consensus/transactions/${txId}/confirm-sent`, {
         evidence,
       })
       return data
@@ -49,7 +53,8 @@ export function PendingActions() {
   // Confirm received mutation
   const confirmReceivedMutation = useMutation({
     mutationFn: async ({ txId, evidence }: { txId: string; evidence: any }) => {
-      const { data } = await axios.post(`/api/consensus/transactions/${txId}/confirm-received`, {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/consensus/transactions/${txId}/confirm-received`, {
         evidence,
       })
       return data
@@ -92,7 +97,7 @@ export function PendingActions() {
       </div>
 
       <div className="divide-y divide-gray-200">
-        {pendingTransactions?.map((transaction) => (
+        {pendingTransactions && pendingTransactions.length > 0 && pendingTransactions.map((transaction: PendingTransaction) => (
           <div key={transaction.id} className="p-6 hover:bg-gray-50 transition-colors">
             <div className="flex items-start justify-between">
               <div className="flex items-start space-x-4">
@@ -154,7 +159,7 @@ export function PendingActions() {
           </div>
         ))}
 
-        {pendingCount === 0 && (
+        {(!pendingTransactions || pendingTransactions.length === 0) && (
           <div className="p-12 text-center">
             <CheckCircle className="w-12 h-12 text-green-500 mx-auto mb-4" />
             <p className="text-gray-600">No pending actions</p>

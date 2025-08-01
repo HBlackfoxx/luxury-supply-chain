@@ -1,7 +1,21 @@
+'use client'
+
+import { useEffect } from 'react'
+import { useRouter } from 'next/navigation'
+import { useAuthStore } from '@/stores/auth-store'
 import Link from 'next/link'
 import { Package, Users, ShieldCheck, QrCode } from 'lucide-react'
 
 export default function HomePage() {
+  const router = useRouter()
+  const { user, isAuthenticated } = useAuthStore()
+
+  useEffect(() => {
+    // Redirect to login if not authenticated
+    if (!isAuthenticated) {
+      router.push('/login')
+    }
+  }, [isAuthenticated, router])
   const portals = [
     {
       title: 'B2B Portal',

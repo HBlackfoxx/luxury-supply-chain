@@ -47,6 +47,13 @@ export interface Transaction {
   brand?: string;
   batchId?: string;
   stakeholders?: string[];
+  dispute?: {
+    type: string;
+    creator: string;
+    created: Date;
+    evidence: any[];
+    status?: string;
+  };
 }
 
 export interface StateConfig {
@@ -282,6 +289,15 @@ export class TransactionStateManager extends EventEmitter {
     if (!disputeableStates.includes(transaction.state)) {
       throw new Error(`Cannot dispute transaction in ${transaction.state} state`);
     }
+
+    // Create dispute object
+    transaction.dispute = {
+      type: disputeType,
+      creator: disputeCreator,
+      created: new Date(),
+      evidence: evidence ? [evidence] : [],
+      status: 'OPEN'
+    };
 
     return this.transitionState(
       transactionId,
@@ -525,6 +541,13 @@ export class TransactionStateManager extends EventEmitter {
       transaction.updated = new Date();
       this.emit('state:updated', { transactionId, newState });
     }
+  }
+
+  /**
+   * Get all transactions
+   */
+  public getTransactions(): Map<string, Transaction> {
+    return this.transactions;
   }
 }
 

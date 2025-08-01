@@ -39,3 +39,16 @@ validate-phase1.sh
 /backend/customer/node_modules
 /frontend/web-app/node_modules
 /frontend/web-app/.next
+/backend/node_modules
+*.log
+backend/test-connection.ts
+backend/test-login.js
+backend/test-luxebags.json
+backend/start.sh
+backend/start-all.sh
+backend/start-simple.sh
+backend/test-manager.json
+DEPLOYMENT_GUIDE.md
+PRODUCTION_ARCHITECTURE.md
+RUN_DEVELOPMENT.md
+TEST_ENV.md

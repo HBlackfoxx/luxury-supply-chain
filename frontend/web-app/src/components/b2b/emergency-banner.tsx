@@ -1,16 +1,20 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
 import { AlertCircle, Info } from 'lucide-react'
+import { useApi } from '@/hooks/use-api'
 
 export function EmergencyBanner() {
+  const api = useApi()
+  
   const { data: emergencyStatus } = useQuery({
     queryKey: ['emergency-status'],
     queryFn: async () => {
-      const { data } = await axios.get('/api/consensus/emergency/status')
+      if (!api) return null
+      const { data } = await api.get('/api/consensus/emergency/status')
       return data
     },
+    enabled: !!api,
     refetchInterval: 30000 // Check every 30 seconds
   })
 

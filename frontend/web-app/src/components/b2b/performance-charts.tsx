@@ -1,21 +1,25 @@
 'use client'
 
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
 import { BarChart3, TrendingUp, Clock, CheckCircle } from 'lucide-react'
 import { format } from 'date-fns'
+import { useApi } from '@/hooks/use-api'
 
 export function PerformanceCharts() {
+  const api = useApi()
+
   const { data: analytics } = useQuery({
     queryKey: ['performance-analytics'],
     queryFn: async () => {
-      const { data } = await axios.post('/api/consensus/analytics/report', {
+      if (!api) return null
+      const { data } = await api.post('/api/consensus/analytics/report', {
         startDate: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days
         endDate: new Date(),
         metrics: ['confirmation_times', 'validation_rate', 'dispute_rate', 'trust_scores']
       })
       return data
-    }
+    },
+    enabled: !!api
   })
 
   const metrics = [

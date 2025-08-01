@@ -2,8 +2,8 @@
 
 import { useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import axios from 'axios'
 import { Package, Upload, CheckCircle, AlertCircle, FileText } from 'lucide-react'
+import { useApi } from '@/hooks/use-api'
 
 interface BatchItem {
   transactionId: string
@@ -13,13 +13,15 @@ interface BatchItem {
 
 export function BatchOperations() {
   const queryClient = useQueryClient()
+  const api = useApi()
   const [batchItems, setBatchItems] = useState<BatchItem[]>([])
   const [csvFile, setCsvFile] = useState<File | null>(null)
   const [isProcessing, setIsProcessing] = useState(false)
 
   const batchMutation = useMutation({
     mutationFn: async (items: BatchItem[]) => {
-      const { data } = await axios.post('/api/consensus/transactions/batch', {
+      if (!api) throw new Error('API not available')
+      const { data } = await api.post('/api/consensus/transactions/batch', {
         operations: items,
       })
       return data
@@ -32,24 +34,44 @@ export function BatchOperations() {
     },
   })
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
       setCsvFile(file)
-      // In a real app, parse CSV and populate batchItems
-      // For demo, just create some sample items
-      setBatchItems([
-        {
-          transactionId: 'TX001',
-          action: 'confirm-sent',
-          evidence: { tracking: 'TRACK123' },
-        },
-        {
-          transactionId: 'TX002',
-          action: 'confirm-received',
-          evidence: { notes: 'Received in good condition' },
-        },
-      ])
+      
+      // Parse CSV file
+      const text = await file.text()
+      const lines = text.split('\n').filter(line => line.trim())
+      
+      // Skip header line
+      const dataLines = lines.slice(1)
+      
+      const items: BatchItem[] = []
+      for (const line of dataLines) {
+        // Parse CSV line (handle quoted values)
+        const parts = line.match(/(".*?"|[^,]+)(?=\s*,|\s*$)/g) || []
+        const cleanParts = parts.map(part => part.replace(/^"|"$/g, '').trim())
+        
+        if (cleanParts.length >= 2) {
+          const [transactionId, action, trackingNumber, notes] = cleanParts
+          
+          const evidence: any = {}
+          if (action === 'confirm-sent' && trackingNumber) {
+            evidence.tracking = trackingNumber
+          }
+          if (action === 'confirm-received' && notes) {
+            evidence.notes = notes
+          }
+          
+          items.push({
+            transactionId,
+            action: action as 'confirm-sent' | 'confirm-received',
+            evidence: Object.keys(evidence).length > 0 ? evidence : undefined
+          })
+        }
+      }
+      
+      setBatchItems(items)
     }
   }
 
@@ -61,14 +83,23 @@ export function BatchOperations() {
   }
 
   const downloadTemplate = () => {
-    // In a real app, this would download a CSV template
-    const csvContent = 'transactionId,action,trackingNumber,notes\nTX001,confirm-sent,TRACK123,\nTX002,confirm-received,,Received in good condition'
-    const blob = new Blob([csvContent], { type: 'text/csv' })
+    const csvContent = [
+      'transactionId,action,trackingNumber,notes',
+      'TX-123456,confirm-sent,TRACK123456,',
+      'TX-123457,confirm-received,,"Received in good condition"',
+      'TX-123458,confirm-sent,TRACK789012,',
+      'TX-123459,confirm-received,,"Quality verified"'
+    ].join('\n')
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
     const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'batch-operations-template.csv'
-    a.click()
+    const link = document.createElement('a')
+    link.href = url
+    link.download = 'batch-operations-template.csv'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   return (

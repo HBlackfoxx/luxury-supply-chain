@@ -2,9 +2,9 @@
 
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import axios from 'axios'
 import { format } from 'date-fns'
 import { Package, CheckCircle, XCircle, Clock, Filter, Download } from 'lucide-react'
+import { useApi } from '@/hooks/use-api'
 
 interface Transaction {
   id: string
@@ -21,17 +21,20 @@ interface Transaction {
 export function TransactionHistory() {
   const [filter, setFilter] = useState<'all' | 'sent' | 'received'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
+  const api = useApi()
 
   const { data: transactions, isLoading } = useQuery({
     queryKey: ['transaction-history', filter, statusFilter],
     queryFn: async () => {
+      if (!api) return []
       const params = new URLSearchParams()
       if (filter !== 'all') params.append('type', filter.toUpperCase())
       if (statusFilter !== 'all') params.append('status', statusFilter)
       
-      const { data } = await axios.get<Transaction[]>(`/api/consensus/transactions?${params}`)
+      const { data } = await api.get<Transaction[]>(`/api/consensus/transactions?${params}`)
       return data
     },
+    enabled: !!api,
   })
 
   const getStatusBadge = (status: string) => {
@@ -68,8 +71,39 @@ export function TransactionHistory() {
   }
 
   const exportTransactions = () => {
-    // In a real app, this would download a CSV
-    console.log('Exporting transactions...')
+    if (!transactions || transactions.length === 0) {
+      alert('No transactions to export')
+      return
+    }
+
+    // Create CSV content
+    const headers = ['Transaction ID', 'Type', 'Item', 'Partner', 'Value', 'Status', 'Created Date', 'Validated Date']
+    const rows = transactions.map(tx => [
+      tx.id,
+      tx.type,
+      tx.itemDescription,
+      tx.partner,
+      tx.value.toString(),
+      tx.status,
+      format(new Date(tx.createdAt), 'yyyy-MM-dd HH:mm:ss'),
+      tx.validatedAt ? format(new Date(tx.validatedAt), 'yyyy-MM-dd HH:mm:ss') : ''
+    ])
+
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(row => row.map(cell => `"${cell}"`).join(','))
+    ].join('\n')
+
+    // Create and download file
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = `transactions-${format(new Date(), 'yyyy-MM-dd')}.csv`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    URL.revokeObjectURL(url)
   }
 
   if (isLoading) {

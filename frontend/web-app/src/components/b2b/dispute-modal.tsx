@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import { X, AlertTriangle, Upload, FileText } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import axios from 'axios'
+import { useApi } from '@/hooks/use-api'
 
 interface DisputeModalProps {
   isOpen: boolean
@@ -18,18 +18,21 @@ interface DisputeModalProps {
 
 export function DisputeModal({ isOpen, onClose, transactionId, transactionDetails }: DisputeModalProps) {
   const queryClient = useQueryClient()
+  const api = useApi()
   const [disputeType, setDisputeType] = useState<string>('NOT_RECEIVED')
   const [reason, setReason] = useState('')
   const [evidence, setEvidence] = useState<File[]>([])
 
   const createDisputeMutation = useMutation({
     mutationFn: async () => {
+      if (!api) throw new Error('API not available')
+      
       const formData = new FormData()
       formData.append('type', disputeType)
       formData.append('reason', reason)
       evidence.forEach(file => formData.append('evidence', file))
 
-      const { data } = await axios.post(
+      const { data } = await api.post(
         `/api/consensus/transactions/${transactionId}/dispute`,
         {
           type: disputeType,
