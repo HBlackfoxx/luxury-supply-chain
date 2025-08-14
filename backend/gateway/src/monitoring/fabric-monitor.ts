@@ -5,6 +5,7 @@
 import { EventEmitter } from 'events';
 import winston from 'winston';
 import express from 'express';
+// @ts-ignore - prom-client types are available but TypeScript can't resolve them
 import { Registry as PromRegistry, Counter, Gauge, Histogram } from 'prom-client';
 
 export interface MetricsConfig {
@@ -50,7 +51,7 @@ export class FabricMonitor extends EventEmitter {
         format: winston.format.combine(
           winston.format.colorize(),
           winston.format.timestamp(),
-          winston.format.printf(info => `${info.timestamp} ${info.level}: ${info.message}`)
+          winston.format.printf((info: winston.Logform.TransformableInfo) => `${info.timestamp} ${info.level}: ${info.message}`)
         )
       })
     ];

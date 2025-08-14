@@ -1,3 +1,14 @@
+# Environment variables
+.env
+.env.local
+.env.production
+.env.*.local
+
+# User database
+data/
+*.db
+users.json
+
 backend/gateway/node_modules
 backend/gateway/dist
 backend/gateway/network
@@ -52,3 +63,11 @@ DEPLOYMENT_GUIDE.md
 PRODUCTION_ARCHITECTURE.md
 RUN_DEVELOPMENT.md
 TEST_ENV.md
+INTEGRATION_FIXES_NEEDED.md
+MISSING_FEATURES_B2B.md
+
+
+
+
+backup*
+chaincode/luxury-supply-chain/main.go.backup

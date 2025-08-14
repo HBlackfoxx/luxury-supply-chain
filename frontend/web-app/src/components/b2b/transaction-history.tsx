@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { format } from 'date-fns'
 import { Package, CheckCircle, XCircle, Clock, Filter, Download } from 'lucide-react'
 import { useApi } from '@/hooks/use-api'
+import { useAuthStore } from '@/stores/auth-store'
 
 interface Transaction {
   id: string
@@ -15,26 +16,29 @@ interface Transaction {
   value: number
   status: 'VALIDATED' | 'PENDING_RECEIVER' | 'PENDING_SENDER' | 'DISPUTED' | 'TIMEOUT'
   createdAt: string
-  validatedAt?: string
+  confirmedAt?: string
+  confirmationTime?: number
 }
 
 export function TransactionHistory() {
   const [filter, setFilter] = useState<'all' | 'sent' | 'received'>('all')
   const [statusFilter, setStatusFilter] = useState<string>('all')
   const api = useApi()
+  const { user } = useAuthStore()
 
   const { data: transactions, isLoading } = useQuery({
-    queryKey: ['transaction-history', filter, statusFilter],
+    queryKey: ['transaction-history', filter, statusFilter, user?.organization],
     queryFn: async () => {
-      if (!api) return []
+      if (!api || !user?.organization) return []
       const params = new URLSearchParams()
       if (filter !== 'all') params.append('type', filter.toUpperCase())
       if (statusFilter !== 'all') params.append('status', statusFilter)
+      params.append('limit', '50')
       
-      const { data } = await api.get<Transaction[]>(`/api/consensus/transactions?${params}`)
+      const { data } = await api.get<Transaction[]>(`/api/consensus/transactions/history/${user.organization}?${params}`)
       return data
     },
-    enabled: !!api,
+    enabled: !!api && !!user?.organization,
   })
 
   const getStatusBadge = (status: string) => {
@@ -86,7 +90,7 @@ export function TransactionHistory() {
       tx.value.toString(),
       tx.status,
       format(new Date(tx.createdAt), 'yyyy-MM-dd HH:mm:ss'),
-      tx.validatedAt ? format(new Date(tx.validatedAt), 'yyyy-MM-dd HH:mm:ss') : ''
+      (tx as any).validatedAt ? format(new Date((tx as any).validatedAt), 'yyyy-MM-dd HH:mm:ss') : ''
     ])
 
     const csvContent = [

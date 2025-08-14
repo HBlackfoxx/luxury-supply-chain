@@ -30,8 +30,24 @@ export function PendingActions() {
     queryKey: ['pending-transactions', user?.organization],
     queryFn: async () => {
       if (!user?.organization || !api) return []
-      const { data } = await api.get<PendingTransaction[]>(`/api/consensus/transactions/pending/${user.organization}`)
-      return data
+      const response = await api.get<{
+        count: number
+        transactions: any[]
+      }>(`/api/consensus/transactions/pending/${user.organization}`)
+      
+      // Transform backend transactions to match frontend structure
+      const transformed = response.data.transactions.map((tx: any) => ({
+        id: tx.id,
+        type: tx.sender === user.organization ? 'SENT' as const : 'RECEIVED' as const,
+        itemId: tx.itemDetails?.itemId || tx.metadata?.itemId || '',
+        itemDescription: tx.itemDetails?.description || tx.metadata?.itemDescription || 'Item',
+        partner: tx.sender === user.organization ? tx.receiver : tx.sender,
+        value: tx.value || 0,
+        status: 'PENDING_CONFIRMATION' as const,
+        createdAt: tx.createdAt
+      }))
+      
+      return transformed
     },
     enabled: !!user?.organization && !!api,
   })

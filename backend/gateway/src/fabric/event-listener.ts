@@ -43,6 +43,12 @@ interface ActiveListener {
 export class EventListenerManager extends EventEmitter {
   private activeListeners: Map<string, ActiveListener> = new Map();
 
+  constructor() {
+    super();
+    // Set max listeners to prevent warnings
+    this.setMaxListeners(50);
+  }
+
   public async addChaincodeListener(
     network: Network,
     chaincodeId: string,
@@ -51,15 +57,27 @@ export class EventListenerManager extends EventEmitter {
     options: ChaincodeEventsOptions = {}
   ): Promise<string> {
     const listenerId = `chaincode:${chaincodeId}:${eventName}:${Date.now()}`;
-    const events = await network.getChaincodeEvents(chaincodeId, options);
-    this.activeListeners.set(listenerId, { iterator: events });
+    
+    try {
+      const events = await network.getChaincodeEvents(chaincodeId, options);
+      this.activeListeners.set(listenerId, { iterator: events });
 
-    console.log(`Started chaincode event listener: ${listenerId}`);
-    this.processEvents(listenerId, events, handler).catch(err => {
-        this.emit('error', { listenerId, error: err });
-    });
+      console.log(`Started chaincode event listener: ${listenerId}`);
+      this.processEvents(listenerId, events, handler).catch(err => {
+          // Only emit error if there are listeners, otherwise just log
+          if (this.listenerCount('error') > 0) {
+              this.emit('error', { listenerId, error: err });
+          } else {
+              console.warn(`Event listener error (no handlers): ${listenerId}`, err.message);
+          }
+      });
 
-    return listenerId;
+      return listenerId;
+    } catch (error: any) {
+      // Handle immediate errors (like permission denied)
+      console.warn(`Failed to setup listener ${listenerId}:`, error.message);
+      throw error;
+    }
   }
 
   public async addBlockListener(

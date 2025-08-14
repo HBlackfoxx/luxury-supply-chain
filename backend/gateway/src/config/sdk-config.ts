@@ -95,9 +95,10 @@ export class SDKConfigManager {
   private identityPath: string;
 
   constructor(brandId: string) {
-    this.configPath = path.join(__dirname, '../../../../config/brands/example-brand');
-    this.cryptoPath = path.join(__dirname, '../../network/organizations');
-    this.identityPath = path.join(__dirname, '../../identities', brandId);
+    // Use environment variables for paths with fallbacks
+    this.configPath = process.env.CONFIG_PATH || path.join(__dirname, '../../../../config/brands/example-brand');
+    this.cryptoPath = process.env.FABRIC_CRYPTO_PATH || '/app/fabric/organizations' || path.join(__dirname, '../../network/organizations');
+    this.identityPath = process.env.IDENTITY_PATH || path.join(__dirname, '../../identities', brandId);
     this.loadBrandConfig();
   }
 
@@ -124,7 +125,12 @@ export class SDKConfigManager {
     if (!org || !org.peers[peerIndex]) {
       throw new Error(`Peer not found for organization: ${orgId}`);
     }
-    return `localhost:${org.peers[peerIndex].port}`;
+    // Use peer hostname when running in Docker, otherwise localhost
+    const hostname = process.env.FABRIC_PEER_HOST || 
+                    (process.env.NODE_ENV === 'production' ? 
+                      `peer${peerIndex}.${orgId}.${this.brandConfig.brand.id}.luxury` : 
+                      'localhost');
+    return `${hostname}:${org.peers[peerIndex].port}`;
   }
 
   public getPeerHostname(orgId: string, peerIndex: number = 0): string {
@@ -168,7 +174,7 @@ export class SDKConfigManager {
     
     // Find the private key
     const keyFiles = fs.readdirSync(keyPath);
-    const privateKeyFile = keyFiles.find(f => f.endsWith('_sk'));
+    const privateKeyFile = keyFiles.find((f: string) => f.endsWith('_sk'));
     
     if (!privateKeyFile) {
       throw new Error(`Private key not found for user ${userId}@${orgId}`);

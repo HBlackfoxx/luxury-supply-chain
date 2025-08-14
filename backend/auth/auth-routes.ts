@@ -67,7 +67,7 @@ export function createAuthRoutes(authService: AuthService): Router {
       }
 
       // Get fresh user data
-      const user = authService.getUserById(decoded.id);
+      const user = await authService.getUserById(decoded.id);
       
       res.json({
         success: true,
@@ -107,7 +107,7 @@ export function createAuthRoutes(authService: AuthService): Router {
         });
       }
 
-      const user = authService.getUserById(decoded.id);
+      const user = await authService.getUserById(decoded.id);
       
       res.json({
         success: true,

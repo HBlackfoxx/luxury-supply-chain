@@ -2,9 +2,10 @@
 // REST API endpoints for 2-Check consensus system
 
 import express, { Router, Request, Response, NextFunction } from 'express';
+import { EventEmitter } from 'events';
 import { ConsensusSystem } from '../setup-consensus';
-import { TransactionState, Transaction } from '../../../consensus/2check/core/state/state-manager';
-import { DisputeType } from '../../../consensus/2check/exceptions/disputes/dispute-resolution';
+import { TransactionState, Transaction } from '../2check/core/state/state-manager';
+import { DisputeType } from '../2check/exceptions/disputes/dispute-resolution';
 
 export interface ApiRequest extends Request {
   consensusSystem?: ConsensusSystem;
@@ -15,11 +16,12 @@ export interface ApiRequest extends Request {
   };
 }
 
-export class ConsensusAPI {
+export class ConsensusAPI extends EventEmitter {
   private router: Router;
   private consensusSystem: ConsensusSystem;
 
   constructor(consensusSystem: ConsensusSystem) {
+    super();
     this.router = express.Router();
     this.consensusSystem = consensusSystem;
     this.setupRoutes();
@@ -47,6 +49,7 @@ export class ConsensusAPI {
     this.router.post('/transactions/:id/confirm-sent', this.confirmSent.bind(this));
     this.router.post('/transactions/:id/confirm-received', this.confirmReceived.bind(this));
     this.router.get('/transactions/pending/:participantId', this.getPendingTransactions.bind(this));
+    this.router.get('/transactions/history/:organizationId', this.getTransactionHistory.bind(this));
 
     // Dispute routes
     this.router.post('/transactions/:id/dispute', this.createDispute.bind(this));
@@ -82,6 +85,9 @@ export class ConsensusAPI {
     this.router.post('/analytics/report', this.getPerformanceReport.bind(this));
     this.router.get('/analytics/party/:partyId', this.getPartyAnalytics.bind(this));
     this.router.get('/analytics/insights', this.getInsights.bind(this));
+    
+    // Metrics endpoint
+    this.router.get('/metrics', this.getConsensusMetrics.bind(this));
     
     // Anomaly routes
     this.router.get('/anomalies/active', this.getActiveAnomalies.bind(this));
@@ -321,6 +327,38 @@ export class ConsensusAPI {
     } catch (error) {
       res.status(500).json({ 
         error: 'Failed to get pending transactions',
+        message: (error as Error).message
+      });
+    }
+  }
+
+  /**
+   * Get transaction history for an organization
+   */
+  private async getTransactionHistory(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { organizationId } = req.params;
+      
+      // Get all transactions for this organization
+      const stateManager = this.consensusSystem.getStateManager();
+      const allTransactions = Array.from(stateManager.getTransactions().values()) as Transaction[];
+      
+      // Filter transactions where org is sender or receiver
+      const orgTransactions = allTransactions.filter(tx => 
+        tx.sender === organizationId || tx.receiver === organizationId
+      );
+      
+      // Sort by date, newest first
+      orgTransactions.sort((a, b) => {
+        const dateA = new Date((a as any).updatedAt || (a as any).createdAt || (a as any).created);
+        const dateB = new Date((b as any).updatedAt || (b as any).createdAt || (b as any).created);
+        return dateB.getTime() - dateA.getTime();
+      });
+      
+      res.json(orgTransactions);
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get transaction history',
         message: (error as Error).message
       });
     }
@@ -993,9 +1031,134 @@ export class ConsensusAPI {
   }
   
   /**
+   * Get consensus metrics
+   */
+  private async getConsensusMetrics(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      // Get real metrics from consensus system
+      const metrics = req.consensusSystem!.getMetrics();
+      
+      // Get additional data from state manager
+      const stateManager = req.consensusSystem!.getStateManager();
+      const transactions = Array.from(stateManager.getTransactions().values());
+      
+      // Calculate time-based metrics
+      const now = new Date();
+      const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const lastWeek = new Date(today.getTime() - 7 * 24 * 60 * 60 * 1000);
+      const lastMonth = new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000);
+      
+      // Today's transactions
+      const todayTransactions = transactions.filter((tx: any) => 
+        new Date(tx.createdAt || tx.created) >= today
+      );
+      
+      // This week's transactions
+      const weekTransactions = transactions.filter((tx: any) => 
+        new Date(tx.createdAt || tx.created) >= lastWeek
+      );
+      
+      // This month's transactions
+      const monthTransactions = transactions.filter((tx: any) => 
+        new Date(tx.createdAt || tx.created) >= lastMonth
+      );
+      
+      // Calculate validation rates
+      const validationRate = transactions.length > 0 
+        ? (metrics.consensus.validatedTransactions / transactions.length * 100).toFixed(2)
+        : '0';
+      
+      const weekValidationRate = weekTransactions.length > 0
+        ? (weekTransactions.filter((tx: any) => tx.state === 'VALIDATED').length / weekTransactions.length * 100).toFixed(2)
+        : '0';
+      
+      // Calculate average values
+      const totalValue = transactions.reduce((sum: number, tx: any) => sum + (tx.value || 0), 0);
+      const avgTransactionValue = transactions.length > 0 
+        ? (totalValue / transactions.length).toFixed(2)
+        : '0';
+      
+      // Get organization-specific metrics
+      const orgMetrics: { [key: string]: any } = {};
+      const orgs = ['luxebags', 'italianleather', 'craftworkshop', 'luxuryretail'];
+      
+      orgs.forEach(org => {
+        const orgTransactions = transactions.filter((tx: any) => 
+          tx.sender === org || tx.receiver === org
+        );
+        
+        const sentTransactions = transactions.filter((tx: any) => tx.sender === org);
+        const receivedTransactions = transactions.filter((tx: any) => tx.receiver === org);
+        const validatedOrgTx = orgTransactions.filter((tx: any) => tx.state === 'VALIDATED');
+        const disputedOrgTx = orgTransactions.filter((tx: any) => tx.state === 'DISPUTED');
+        
+        orgMetrics[org] = {
+          totalTransactions: orgTransactions.length,
+          sentTransactions: sentTransactions.length,
+          receivedTransactions: receivedTransactions.length,
+          validatedTransactions: validatedOrgTx.length,
+          disputedTransactions: disputedOrgTx.length,
+          validationRate: orgTransactions.length > 0 
+            ? (validatedOrgTx.length / orgTransactions.length * 100).toFixed(2)
+            : '0',
+          disputeRate: orgTransactions.length > 0
+            ? (disputedOrgTx.length / orgTransactions.length * 100).toFixed(2)
+            : '0'
+        };
+      });
+      
+      res.json({
+        summary: {
+          totalTransactions: metrics.consensus.totalTransactions,
+          pendingTransactions: metrics.consensus.pendingTransactions,
+          validatedTransactions: metrics.consensus.validatedTransactions,
+          disputedTransactions: metrics.consensus.disputedTransactions,
+          validationRate: parseFloat(validationRate),
+          disputeRate: parseFloat(String(metrics.consensus.disputeRate || '0')),
+          averageConfirmationTime: metrics.consensus.averageConfirmationTime,
+          averageTransactionValue: parseFloat(avgTransactionValue)
+        },
+        timeSeries: {
+          today: {
+            count: todayTransactions.length,
+            validated: todayTransactions.filter((tx: any) => tx.state === 'VALIDATED').length,
+            pending: todayTransactions.filter((tx: any) => 
+              tx.state === 'INITIATED' || tx.state === 'SENT'
+            ).length,
+            disputed: todayTransactions.filter((tx: any) => tx.state === 'DISPUTED').length
+          },
+          week: {
+            count: weekTransactions.length,
+            validated: weekTransactions.filter((tx: any) => tx.state === 'VALIDATED').length,
+            validationRate: parseFloat(weekValidationRate)
+          },
+          month: {
+            count: monthTransactions.length,
+            validated: monthTransactions.filter((tx: any) => tx.state === 'VALIDATED').length
+          }
+        },
+        organizations: orgMetrics,
+        trust: metrics.trust,
+        performance: {
+          ...metrics.performance,
+          uptime: process.uptime(),
+          memoryUsage: process.memoryUsage(),
+          cpuUsage: process.cpuUsage()
+        },
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      res.status(500).json({ 
+        error: 'Failed to get consensus metrics',
+        message: (error as Error).message
+      });
+    }
+  }
+  
+  /**
    * Get active anomalies
    */
-  private async getActiveAnomalies(req: ApiRequest, res: Response): Promise<void> {
+  private async getActiveAnomalies(_req: ApiRequest, res: Response): Promise<void> {
     try {
       // For now, return empty array as anomaly detection is not yet implemented
       res.json([]);

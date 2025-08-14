@@ -2,6 +2,7 @@
 // Notification service for sending alerts and updates
 
 import { EventEmitter } from 'events';
+import { Pool } from 'pg';
 
 export interface NotificationConfig {
   emailEnabled: boolean;
@@ -25,6 +26,7 @@ export interface Notification {
 export class NotificationService extends EventEmitter {
   private config: NotificationConfig;
   private notificationQueue: Notification[] = [];
+  private pool: Pool | null = null;
 
   constructor(config: NotificationConfig = {
     emailEnabled: true,
@@ -33,7 +35,27 @@ export class NotificationService extends EventEmitter {
   }) {
     super();
     this.config = config;
+    this.initializeDatabase();
     this.startQueueProcessor();
+  }
+
+  /**
+   * Initialize database connection
+   */
+  private initializeDatabase(): void {
+    if (process.env.DB_TYPE === 'postgres') {
+      this.pool = new Pool({
+        host: process.env.POSTGRES_HOST || 'localhost',
+        port: parseInt(process.env.POSTGRES_PORT || '5432'),
+        database: process.env.POSTGRES_DB || 'luxury_supply_chain',
+        user: process.env.POSTGRES_USER || 'postgres',
+        password: process.env.POSTGRES_PASSWORD || 'postgres'
+      });
+      
+      this.pool.on('error', (err) => {
+        console.error('Unexpected database error:', err);
+      });
+    }
   }
 
   /**
@@ -143,6 +165,9 @@ export class NotificationService extends EventEmitter {
    * Process individual notification
    */
   private async processNotification(notification: Notification): Promise<void> {
+    // First, save to database
+    await this.saveNotificationToDatabase(notification);
+    
     const promises: Promise<void>[] = [];
 
     // Email notification
@@ -166,6 +191,38 @@ export class NotificationService extends EventEmitter {
     }
 
     await Promise.all(promises);
+  }
+
+  /**
+   * Save notification to database
+   */
+  private async saveNotificationToDatabase(notification: Notification): Promise<void> {
+    if (!this.pool) {
+      console.log('Database not configured, skipping notification persistence');
+      return;
+    }
+
+    try {
+      // Save to all recipients
+      for (const recipient of notification.recipients) {
+        await this.pool.query(
+          `INSERT INTO notifications (type, recipient, subject, message, data, priority, channels, read)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+          [
+            notification.type,
+            recipient,
+            notification.subject,
+            notification.message,
+            JSON.stringify(notification.data || {}),
+            notification.priority,
+            notification.channels,
+            false
+          ]
+        );
+      }
+    } catch (error) {
+      console.error('Failed to save notification to database:', error);
+    }
   }
 
   /**
@@ -243,6 +300,138 @@ export class NotificationService extends EventEmitter {
       queueSize: this.notificationQueue.length,
       config: this.config
     };
+  }
+
+  /**
+   * Get notifications for a user
+   */
+  public async getNotificationsForUser(
+    recipient: string, 
+    options: { 
+      limit?: number; 
+      offset?: number; 
+      unreadOnly?: boolean;
+      type?: string;
+    } = {}
+  ): Promise<any[]> {
+    if (!this.pool) {
+      return [];
+    }
+
+    try {
+      let query = 'SELECT * FROM notifications WHERE recipient = $1';
+      const params: any[] = [recipient];
+      let paramIndex = 2;
+
+      if (options.unreadOnly) {
+        query += ` AND read = false`;
+      }
+
+      if (options.type) {
+        query += ` AND type = $${paramIndex}`;
+        params.push(options.type);
+        paramIndex++;
+      }
+
+      query += ' ORDER BY created_at DESC';
+
+      if (options.limit) {
+        query += ` LIMIT $${paramIndex}`;
+        params.push(options.limit);
+        paramIndex++;
+      }
+
+      if (options.offset) {
+        query += ` OFFSET $${paramIndex}`;
+        params.push(options.offset);
+      }
+
+      const result = await this.pool.query(query, params);
+      return result.rows;
+    } catch (error) {
+      console.error('Failed to get notifications:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Mark notification as read
+   */
+  public async markAsRead(notificationId: number, recipient: string): Promise<boolean> {
+    if (!this.pool) {
+      return false;
+    }
+
+    try {
+      const result = await this.pool.query(
+        'UPDATE notifications SET read = true, read_at = NOW() WHERE id = $1 AND recipient = $2',
+        [notificationId, recipient]
+      );
+      return (result.rowCount ?? 0) > 0;
+    } catch (error) {
+      console.error('Failed to mark notification as read:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Mark all notifications as read for a user
+   */
+  public async markAllAsRead(recipient: string): Promise<boolean> {
+    if (!this.pool) {
+      return false;
+    }
+
+    try {
+      await this.pool.query(
+        'UPDATE notifications SET read = true, read_at = NOW() WHERE recipient = $1 AND read = false',
+        [recipient]
+      );
+      return true;
+    } catch (error) {
+      console.error('Failed to mark all notifications as read:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Get unread notification count
+   */
+  public async getUnreadCount(recipient: string): Promise<number> {
+    if (!this.pool) {
+      return 0;
+    }
+
+    try {
+      const result = await this.pool.query(
+        'SELECT COUNT(*) as count FROM notifications WHERE recipient = $1 AND read = false',
+        [recipient]
+      );
+      return parseInt(result.rows[0].count, 10);
+    } catch (error) {
+      console.error('Failed to get unread count:', error);
+      return 0;
+    }
+  }
+
+  /**
+   * Delete old notifications
+   */
+  public async deleteOldNotifications(daysToKeep: number = 30): Promise<number> {
+    if (!this.pool) {
+      return 0;
+    }
+
+    try {
+      const result = await this.pool.query(
+        'DELETE FROM notifications WHERE created_at < NOW() - INTERVAL \'$1 days\'',
+        [daysToKeep]
+      );
+      return result.rowCount ?? 0;
+    } catch (error) {
+      console.error('Failed to delete old notifications:', error);
+      return 0;
+    }
   }
 }
 

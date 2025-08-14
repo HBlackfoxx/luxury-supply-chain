@@ -583,14 +583,3 @@ func (c *ConsensusContract) emitEvent(ctx contractapi.TransactionContextInterfac
 	return ctx.GetStub().SetEvent("ConsensusEvent", eventJSON)
 }
 
-func main() {
-	chaincode, err := contractapi.NewChaincode(&ConsensusContract{})
-	if err != nil {
-		fmt.Printf("Error creating consensus chaincode: %v\n", err)
-		return
-	}
-	
-	if err := chaincode.Start(); err != nil {
-		fmt.Printf("Error starting consensus chaincode: %v\n", err)
-	}
-}

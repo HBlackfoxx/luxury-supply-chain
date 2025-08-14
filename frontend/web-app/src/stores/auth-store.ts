@@ -49,7 +49,7 @@ export const useAuthStore = create<AuthState>()(
           window.location.href = '/login'
         }
       },
-      getAuthHeaders: () => {
+      getAuthHeaders: (): Record<string, string> => {
         const { token } = get()
         if (token) {
           return { Authorization: `Bearer ${token}` }

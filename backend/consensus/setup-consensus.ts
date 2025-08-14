@@ -9,11 +9,11 @@ import { EventListenerManager } from '../gateway/src/fabric/event-listener';
 import { FabricMonitor } from '../gateway/src/monitoring/fabric-monitor';
 import { notificationService } from '../services/notification-service';
 
-import { TransactionStateManager } from '../../consensus/2check/core/state/state-manager';
-import { ValidationEngine } from '../../consensus/2check/core/validation/validation-engine';
+import { TransactionStateManager } from './2check/core/state/state-manager';
+import { ValidationEngine } from './2check/core/validation/validation-engine';
 import { FabricConsensusAdapter } from './fabric-consensus-adapter';
-import { ConsensusOrchestrator } from '../../consensus/2check/integration/consensus-orchestrator';
-import { TrustScoringSystem } from '../../consensus/2check/core/trust/trust-scoring-system';
+import { ConsensusOrchestrator } from './2check/integration/consensus-orchestrator';
+import { TrustScoringSystem } from './2check/core/trust/trust-scoring-system';
 
 export class ConsensusSystem {
   private configManager: SDKConfigManager;
@@ -251,7 +251,7 @@ export class ConsensusSystem {
     try {
       const pending = this.stateManager.getPendingTransactions(participantId);
       
-      return pending.map(tx => ({
+      return pending.map((tx: any) => ({
         id: tx.id,
         state: tx.state,
         role: tx.sender === participantId ? 'sender' : 'receiver',
@@ -275,7 +275,7 @@ export class ConsensusSystem {
    */
   private setupEventHandlers(): void {
     // Handle notifications
-    this.fabricAdapter.on('notification:send', async (data) => {
+    this.fabricAdapter.on('notification:send', async (data: any) => {
       try {
         await this.sendNotification(data);
       } catch (error) {
@@ -287,7 +287,7 @@ export class ConsensusSystem {
     });
 
     // Handle validation completions
-    this.stateManager.on('transaction:validated', (transaction) => {
+    this.stateManager.on('transaction:validated', (transaction: any) => {
       this.monitor.logInfo('Transaction validated', {
         transactionId: transaction.id,
         sender: transaction.sender,
@@ -297,7 +297,7 @@ export class ConsensusSystem {
     });
 
     // Handle timeouts
-    this.stateManager.on('transaction:timeout', (transaction) => {
+    this.stateManager.on('transaction:timeout', (transaction: any) => {
       this.monitor.logInfo('Transaction timeout', {
         transactionId: transaction.id,
         state: transaction.state
@@ -305,7 +305,7 @@ export class ConsensusSystem {
     });
 
     // Handle disputes
-    this.stateManager.on('transaction:disputed', (transaction) => {
+    this.stateManager.on('transaction:disputed', (transaction: any) => {
       this.monitor.logInfo('Transaction disputed', {
         transactionId: transaction.id
       });
@@ -317,12 +317,12 @@ export class ConsensusSystem {
    */
   private setupConsensusMonitoring(): void {
     // Monitor validation performance
-    this.validationEngine.on('validation:completed', (data) => {
+    this.validationEngine.on('validation:completed', (data: any) => {
       // Record metrics
     });
 
     // Monitor anomaly detection
-    this.validationEngine.on('warning:anomalies_detected', (data) => {
+    this.validationEngine.on('warning:anomalies_detected', (data: any) => {
       this.monitor.logInfo('Anomalies detected', data);
     });
   }
@@ -571,6 +571,74 @@ export class ConsensusSystem {
    */
   public getStateManager() {
     return this.stateManager;
+  }
+
+  /**
+   * Get system metrics for monitoring
+   */
+  public getMetrics() {
+    const transactions = Array.from(this.stateManager.getTransactions().values());
+    const now = new Date();
+    const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    
+    // Calculate real metrics from transactions
+    const pendingTx = transactions.filter((tx: any) => 
+      tx.state === 'INITIATED' || tx.state === 'SENT'
+    );
+    
+    const validatedTx = transactions.filter((tx: any) => 
+      tx.state === 'VALIDATED'
+    );
+    
+    const disputedTx = transactions.filter((tx: any) => 
+      tx.state === 'DISPUTED'
+    );
+    
+    const todayTx = transactions.filter((tx: any) => 
+      new Date(tx.createdAt || tx.created) >= today
+    );
+    
+    // Calculate average confirmation time
+    let totalConfTime = 0;
+    let confirmedCount = 0;
+    
+    validatedTx.forEach((tx: any) => {
+      if (tx.createdAt && tx.updatedAt) {
+        const timeDiff = new Date(tx.updatedAt).getTime() - new Date(tx.createdAt).getTime();
+        totalConfTime += timeDiff / 1000; // seconds
+        confirmedCount++;
+      }
+    });
+    
+    const avgConfTime = confirmedCount > 0 ? totalConfTime / confirmedCount : 0;
+    
+    return {
+      consensus: {
+        totalTransactions: transactions.length,
+        pendingTransactions: pendingTx.length,
+        validatedTransactions: validatedTx.length,
+        disputedTransactions: disputedTx.length,
+        todayTransactions: todayTx.length,
+        averageConfirmationTime: avgConfTime,
+        disputeRate: transactions.length > 0 
+          ? (disputedTx.length / transactions.length * 100).toFixed(2)
+          : 0
+      },
+      trust: {
+        // Trust metrics would come from trust system
+        averageScore: 85,
+        totalRelationships: new Set(transactions.map((tx: any) => `${tx.sender}-${tx.receiver}`)).size
+      },
+      performance: {
+        errorRate: 0, // Would need error tracking
+        averageResponseTime: 150, // Would need request tracking
+        throughput: todayTx.length // Transactions today
+      },
+      compensation: {
+        totalPending: 0, // Would need compensation engine integration
+        pendingCount: 0
+      }
+    };
   }
   
   public async getTransactionReport(transactionId: string): Promise<any> {

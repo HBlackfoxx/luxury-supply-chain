@@ -1,0 +1,38 @@
+version: '3.7'
+
+networks:
+  luxury-supply-chain:
+    external: true
+
+services:
+  consensus-chaincode:
+    container_name: consensus-chaincode
+    image: consensus-chaincode:latest
+    build:
+      context: ../chaincode/2check-consensus
+      dockerfile: Dockerfile
+    environment:
+      - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9999
+      - CHAINCODE_ID=2check-consensus:1.0
+      - CORE_CHAINCODE_LOGGING_LEVEL=info
+    ports:
+      - "9999:9999"
+    networks:
+      - luxury-supply-chain
+    restart: unless-stopped
+
+  luxury-chaincode:
+    container_name: luxury-chaincode
+    image: luxury-chaincode:latest
+    build:
+      context: ../chaincode/luxury-supply-chain
+      dockerfile: Dockerfile
+    environment:
+      - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9998
+      - CHAINCODE_ID=luxury-supply-chain:1.0
+      - CORE_CHAINCODE_LOGGING_LEVEL=info
+    ports:
+      - "9998:9998"
+    networks:
+      - luxury-supply-chain
+    restart: unless-stopped

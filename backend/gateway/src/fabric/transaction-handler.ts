@@ -115,19 +115,22 @@ export class TransactionHandler {
 
   // Error handling helpers
   public isEndorsementError(error: any): boolean {
-    return error instanceof EndorseError;
+    // Check for EndorseError by examining error properties
+    return error && error.name === 'EndorseError';
   }
 
   public isSubmitError(error: any): boolean {
-    return error instanceof SubmitError;
+    // Check for SubmitError by examining error properties
+    return error && error.name === 'SubmitError';
   }
 
   public isCommitError(error: any): boolean {
-    return error instanceof CommitError || error instanceof CommitStatusError;
+    // Check for CommitError or CommitStatusError by examining error properties
+    return error && (error.name === 'CommitError' || error.name === 'CommitStatusError');
   }
 
   public getErrorDetails(error: any): any[] {
-    if (error instanceof GatewayError && error.details) {
+    if (error && error.details) {
         return error.details;
     }
     return [];

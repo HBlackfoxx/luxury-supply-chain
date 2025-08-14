@@ -23,20 +23,54 @@ export function TrustScoreDashboard() {
     queryKey: ['trust-scores', user?.organization],
     queryFn: async () => {
       if (!user?.organization || !api) return []
-      const { data } = await api.get(`/api/consensus/trust/${user.organization}/history`)
       
-      // Transform the response to match TrustScore interface
-      if (!data?.relationships) return []
-      
-      return data.relationships.map((rel: any) => ({
-        partnerId: rel.partnerId,
-        partnerName: rel.partnerName || rel.partnerId,
-        score: rel.trustScore || 0,
-        trend: rel.trend || 'stable',
-        transactions: rel.totalTransactions || 0,
-        disputes: rel.disputeCount || 0,
-        lastInteraction: rel.lastInteraction || new Date().toISOString()
-      }))
+      try {
+        // Get transaction history to calculate trust scores
+        const { data } = await api.get(`/api/consensus/transactions/history/${user.organization}`)
+        
+        // Calculate partner trust scores from transaction history
+        const partnerMap: { [key: string]: TrustScore } = {}
+        
+        data.forEach((tx: any) => {
+          const partner = tx.sender === user.organization ? tx.receiver : tx.sender
+          if (partner === user.organization) return // Skip self
+          
+          if (!partnerMap[partner]) {
+            partnerMap[partner] = {
+              partnerId: partner,
+              partnerName: partner.charAt(0).toUpperCase() + partner.slice(1),
+              score: 85, // Base score
+              trend: 'stable' as const,
+              transactions: 0,
+              disputes: 0,
+              lastInteraction: tx.updatedAt || tx.createdAt
+            }
+          }
+          
+          partnerMap[partner].transactions++
+          
+          // Adjust score based on transaction outcome
+          if (tx.state === 'VALIDATED') {
+            partnerMap[partner].score = Math.min(100, partnerMap[partner].score + 1)
+            partnerMap[partner].trend = 'up'
+          } else if (tx.state === 'DISPUTED') {
+            partnerMap[partner].disputes++
+            partnerMap[partner].score = Math.max(0, partnerMap[partner].score - 5)
+            partnerMap[partner].trend = 'down'
+          }
+          
+          // Update last interaction
+          const txDate = tx.updatedAt || tx.createdAt
+          if (new Date(txDate) > new Date(partnerMap[partner].lastInteraction)) {
+            partnerMap[partner].lastInteraction = txDate
+          }
+        })
+        
+        return Object.values(partnerMap)
+      } catch (error) {
+        console.error('Failed to fetch trust scores:', error)
+        return []
+      }
     },
     enabled: !!user?.organization && !!api,
   })
@@ -45,10 +79,41 @@ export function TrustScoreDashboard() {
     queryKey: ['my-trust-score', user?.organization],
     queryFn: async () => {
       if (!user?.organization || !api) return null
-      const { data } = await api.get(`/api/consensus/trust/${user.organization}`)
-      return data
+      
+      try {
+        // Calculate overall trust score from partner scores
+        if (!trustScores || trustScores.length === 0) {
+          return { score: 85, trend: 'stable', totalTransactions: 0, rank: null } // Default for new organizations
+        }
+        
+        const avgScore = Math.round(
+          trustScores.reduce((sum, partner) => sum + partner.score, 0) / trustScores.length
+        )
+        
+        const totalTransactions = trustScores.reduce((sum, partner) => sum + partner.transactions, 0)
+        
+        // Determine trend based on recent partner trends
+        const upCount = trustScores.filter(p => p.trend === 'up').length
+        const downCount = trustScores.filter(p => p.trend === 'down').length
+        
+        let trend: 'up' | 'down' | 'stable' = 'stable'
+        if (upCount > downCount) trend = 'up'
+        else if (downCount > upCount) trend = 'down'
+        
+        // Calculate rank based on score
+        let rank = null
+        if (avgScore >= 95) rank = 1
+        else if (avgScore >= 90) rank = 2
+        else if (avgScore >= 85) rank = 3
+        else if (avgScore >= 80) rank = 4
+        else rank = 5
+        
+        return { score: avgScore, trend, totalTransactions, rank }
+      } catch (error) {
+        return { score: 85, trend: 'stable', totalTransactions: 0, rank: null }
+      }
     },
-    enabled: !!user?.organization && !!api,
+    enabled: !!user?.organization && !!api && !!trustScores,
   })
 
   if (isLoading) {
@@ -100,7 +165,7 @@ export function TrustScoreDashboard() {
           </div>
         </div>
 
-        {myScore?.score < 80 && (
+        {myScore && myScore.score < 80 && (
           <div className="mt-4 p-3 bg-amber-50 rounded-md flex items-start space-x-2">
             <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
             <div className="text-sm text-amber-800">

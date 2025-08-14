@@ -1,7 +1,9 @@
 // backend/auth/auth-service.ts
 import jwt from 'jsonwebtoken';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { IdentityManager } from '../gateway/src/fabric/identity-manager';
+import { UserRepository } from './user-repository';
 
 export interface User {
   id: string;
@@ -13,8 +15,9 @@ export interface User {
   fabricUserId?: string;
 }
 
-// In production, these would be in a database
-const USERS: User[] = [
+// DEPRECATED: Users now managed by UserRepository
+// Keeping for reference during migration
+const LEGACY_USERS: User[] = [
   // LuxeBags (Brand) users
   {
     id: 'admin-luxebags',
@@ -99,24 +102,88 @@ const USERS: User[] = [
 export class AuthService {
   private jwtSecret: string;
   private identityManager: IdentityManager;
+  private userRepository: UserRepository;
+  private initialized: boolean = false;
 
   constructor(identityManager: IdentityManager) {
-    this.jwtSecret = process.env.JWT_SECRET || 'luxury-supply-chain-secret-change-in-production';
+    // Generate a secure JWT secret if not provided
+    this.jwtSecret = this.getSecureJwtSecret();
     this.identityManager = identityManager;
+    this.userRepository = new UserRepository();
+  }
+
+  /**
+   * Get or generate a secure JWT secret
+   */
+  private getSecureJwtSecret(): string {
+    const envSecret = process.env.JWT_SECRET;
+    
+    if (!envSecret || envSecret === 'luxury-supply-chain-secret-change-in-production') {
+      console.warn('⚠️  WARNING: Using default or weak JWT secret!');
+      console.warn('⚠️  Generate a secure secret with: openssl rand -base64 32');
+      console.warn('⚠️  Then set JWT_SECRET environment variable');
+      
+      // In development, generate a random secret (will change on restart)
+      if (process.env.NODE_ENV === 'development') {
+        const randomSecret = crypto.randomBytes(32).toString('base64');
+        console.log('📝 Generated temporary JWT secret for development');
+        return randomSecret;
+      }
+      
+      // In production, refuse to start with weak secret
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('JWT_SECRET must be set in production environment');
+      }
+    }
+    
+    // Validate secret strength
+    if (envSecret && envSecret.length < 32) {
+      console.warn('⚠️  JWT secret should be at least 32 characters for security');
+    }
+    
+    return envSecret || crypto.randomBytes(32).toString('base64');
+  }
+
+  /**
+   * Initialize the auth service
+   */
+  async initialize(): Promise<void> {
+    if (this.initialized) return;
+    
+    await this.userRepository.initialize();
+    this.initialized = true;
+    
+    // Log security status
+    const userCount = await this.userRepository.count();
+    console.log(`✅ Auth service initialized with ${userCount} users`);
+    
+    if (process.env.JWT_SECRET) {
+      console.log('✅ Using configured JWT secret');
+    } else {
+      console.log('⚠️  Using generated JWT secret (configure JWT_SECRET for production)');
+    }
+  }
+
+  /**
+   * Get the database connection pool
+   */
+  getPool() {
+    return this.userRepository.getPool();
   }
 
   /**
    * Authenticate user and return JWT token
    */
   async login(email: string, password: string): Promise<{ user: Omit<User, 'password'>, token: string } | null> {
-    const user = USERS.find(u => u.email === email);
+    // Ensure service is initialized
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    // Verify credentials against repository
+    const user = await this.userRepository.verifyPassword(email, password);
     
     if (!user) {
-      return null;
-    }
-
-    const isValid = await bcrypt.compare(password, user.password);
-    if (!isValid) {
       return null;
     }
 
@@ -156,8 +223,13 @@ export class AuthService {
   /**
    * Get user by ID
    */
-  getUserById(id: string): Omit<User, 'password'> | null {
-    const user = USERS.find(u => u.id === id);
+  async getUserById(id: string): Promise<Omit<User, 'password'> | null> {
+    // Ensure service is initialized
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    const user = await this.userRepository.findById(id);
     if (!user) return null;
     
     const { password: _, ...userWithoutPassword } = user;
@@ -167,50 +239,88 @@ export class AuthService {
   /**
    * Get all users for an organization (for admin)
    */
-  getOrganizationUsers(organization: string): Omit<User, 'password'>[] {
-    return USERS
-      .filter(u => u.organization === organization)
-      .map(({ password: _, ...user }) => user);
+  async getOrganizationUsers(organization: string): Promise<Omit<User, 'password'>[]> {
+    // Ensure service is initialized
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    const users = await this.userRepository.findByOrganization(organization);
+    return users.map(({ password: _, ...user }) => user);
   }
 
   /**
    * Initialize Fabric identities for all users
+   * Maps database users to existing Fabric identities (User1, User2, etc.)
    */
   async initializeFabricIdentities(): Promise<void> {
-    console.log('Initializing Fabric identities for all users...');
+    console.log('Verifying Fabric identities for all users...');
     
-    for (const user of USERS) {
-      try {
-        // Check if identity exists
-        const identity = await this.identityManager.getIdentity(user.organization, user.fabricUserId || 'user1');
-        
-        if (!identity && user.fabricUserId !== 'admin') {
-          // Register and enroll non-admin users
-          console.log(`Registering ${user.name} (${user.email}) in Fabric...`);
-          await this.identityManager.registerAndEnrollUser(
-            user.organization,
-            user.fabricUserId || 'user1',
-            {
-              affiliation: `${user.organization}.department1`,
-              attrs: [
-                { name: 'email', value: user.email, ecert: true },
-                { name: 'role', value: user.role, ecert: true }
-              ]
-            }
-          );
+    // Ensure service is initialized
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    // Get all organizations
+    const organizations = ['luxebags', 'italianleather', 'craftworkshop', 'luxuryretail'];
+    
+    for (const org of organizations) {
+      const users = await this.userRepository.findByOrganization(org);
+      for (const user of users) {
+        try {
+          // Convert fabric_user_id to proper format (user1 -> User1, admin -> Admin)
+          const fabricUserId = user.fabricUserId || 'User1';
+          const properFabricId = fabricUserId.charAt(0).toUpperCase() + fabricUserId.slice(1);
+          
+          // Check if the pre-generated identity exists
+          const identity = await this.identityManager.getIdentity(user.organization, properFabricId);
+          
+          if (identity) {
+            console.log(`✓ Using existing identity ${properFabricId} for ${user.email}`);
+          } else {
+            console.warn(`⚠ Identity ${properFabricId} not found for ${user.email}, will use Admin identity as fallback`);
+          }
+        } catch (error) {
+          console.warn(`Failed to verify Fabric identity for ${user.email}:`, error);
         }
-      } catch (error) {
-        console.warn(`Failed to initialize Fabric identity for ${user.email}:`, error);
       }
     }
     
-    console.log('Fabric identity initialization complete');
+    console.log('Fabric identity verification complete');
   }
 
   /**
    * Get demo credentials for documentation
    */
+  /**
+   * Create a new user (admin only)
+   */
+  async createUser(userData: Omit<User, 'id'>): Promise<Omit<User, 'password'> | null> {
+    // Ensure service is initialized
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    const user = await this.userRepository.create(userData);
+    const { password: _, ...userWithoutPassword } = user;
+    return userWithoutPassword;
+  }
+
+  /**
+   * Change user password
+   */
+  async changePassword(userId: string, oldPassword: string, newPassword: string): Promise<boolean> {
+    // Ensure service is initialized
+    if (!this.initialized) {
+      await this.initialize();
+    }
+    
+    return await this.userRepository.changePassword(userId, oldPassword, newPassword);
+  }
+
   static getDemoCredentials() {
+    console.log('⚠️  Demo credentials - DO NOT USE IN PRODUCTION');
+    console.log('Set INIT_DEFAULT_USERS=true and configure passwords via environment variables');
     return [
       {
         organization: 'LuxeBags (Brand)',

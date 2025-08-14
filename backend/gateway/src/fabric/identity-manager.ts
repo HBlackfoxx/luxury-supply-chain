@@ -3,11 +3,23 @@
 // Manages identities without wallet (fabric-gateway 1.x doesn't have wallet concept)
 
 import { Identity, Signer, signers } from '@hyperledger/fabric-gateway';
-import FabricCAServices from 'fabric-ca-client';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import { SDKConfigManager } from '../config/sdk-config';
+
+// Declare FabricCAServices type to avoid TypeScript errors
+declare const FabricCAServices: any;
+// Dynamic import to avoid module resolution issues
+const loadFabricCA = () => {
+  try {
+    return require('fabric-ca-client');
+  } catch (err) {
+    console.warn('Warning: fabric-ca-client not available, CA operations disabled');
+    return null;
+  }
+};
+const FabricCAServicesClass = loadFabricCA();
 
 export interface EnrollmentOptions {
   enrollmentID: string;
@@ -25,7 +37,7 @@ export interface StoredIdentity {
 
 export class IdentityManager {
   private configManager: SDKConfigManager;
-  private caClients: Map<string, FabricCAServices> = new Map();
+  private caClients: Map<string, any> = new Map();
 
   constructor(configManager: SDKConfigManager) {
     this.configManager = configManager;
@@ -47,6 +59,27 @@ export class IdentityManager {
 
   // Load identity from file system
   private async loadStoredIdentity(orgId: string, userId: string): Promise<StoredIdentity | null> {
+    // Check if we're looking for admin - use the mounted Fabric certificates
+    if (userId.toLowerCase() === 'admin') {
+      const fabricUserPath = `/app/fabric/organizations/peerOrganizations/${orgId}.luxe-bags.luxury/users/Admin@${orgId}.luxe-bags.luxury`;
+      const mspPath = path.join(fabricUserPath, 'msp');
+      
+      // Check if Fabric certificates exist
+      if (fs.existsSync(mspPath)) {
+        const certPath = path.join(mspPath, 'signcerts', `Admin@${orgId}.luxe-bags.luxury-cert.pem`);
+        const keyPath = path.join(mspPath, 'keystore', 'priv_sk');
+        
+        if (fs.existsSync(certPath) && fs.existsSync(keyPath)) {
+          return {
+            certificate: fs.readFileSync(certPath, 'utf8'),
+            privateKey: fs.readFileSync(keyPath, 'utf8'),
+            mspId: `${orgId.charAt(0).toUpperCase() + orgId.slice(1)}MSP`
+          };
+        }
+      }
+    }
+    
+    // Fallback to original logic for non-admin users
     const identityPath = this.configManager.getIdentityPath(orgId);
     const userPath = path.join(identityPath, userId);
     
@@ -65,7 +98,7 @@ export class IdentityManager {
     };
   }
 
-  public async getCAClient(orgId: string): Promise<FabricCAServices> {
+  public async getCAClient(orgId: string): Promise<any> {
     if (!this.caClients.has(orgId)) {
       const org = this.configManager.getOrganization(orgId);
       if (!org) {
@@ -74,7 +107,10 @@ export class IdentityManager {
 
       const caInfo = this.getCAInfo(orgId);
       const caTLSCACerts = [caInfo.tlsCACert];
-      const caClient = new FabricCAServices(
+      if (!FabricCAServicesClass) {
+        throw new Error('fabric-ca-client not available');
+      }
+      const caClient = new FabricCAServicesClass(
         caInfo.url,
         { trustedRoots: caTLSCACerts, verify: false },
         caInfo.caName
@@ -95,7 +131,7 @@ private getCAInfo(orgId: string): { url: string; caName: string; tlsCACert: stri
     }
 
     const cryptoPath = this.configManager.getCryptoPath(orgId);
-    // FIXED: Correct path to CA TLS certificate
+    // Use brand.id from config which is 'luxe-bags'
     const tlsCACertPath = path.join(cryptoPath, 'tlsca', `tlsca.${orgId}.${this.configManager.getBrandConfig().brand.id}.luxury-cert.pem`);
     
     // If tlsca cert doesn't exist, try the ca cert as fallback
@@ -169,30 +205,35 @@ private getCAInfo(orgId: string): { url: string; caName: string; tlsCACert: stri
 
     const caClient = await this.getCAClient(orgId);
     
-    // Build user context for CA operations
-    const provider = caClient.newIdentityService();
+    // Check if fabric-ca-client is available
+    if (!FabricCAServicesClass) {
+      throw new Error('fabric-ca-client module not available');
+    }
     
-    // Create an admin user context
-    const adminUserContext = {
+    // Create an admin user object that the CA client expects
+    // The fabric-ca-client expects a user object with specific methods
+    const adminUser = {
       getName: () => 'admin',
-      getMspid: () => adminIdentity.mspId,
       getIdentity: () => ({
         certificate: adminIdentity.certificate
       }),
       getSigningIdentity: () => ({
         certificate: adminIdentity.certificate,
         key: adminIdentity.privateKey
-      })
+      }),
+      getMspId: () => adminIdentity.mspId,
+      setEnrollment: () => Promise.resolve(),
+      isEnrolled: () => true
     };
 
-    // Register the user
+    // Register the user with the admin user context
     const secret = await caClient.register({
       affiliation: options.affiliation || `${orgId}.department1`,
       enrollmentID: userId,
       role: options.role || 'client',
       attrs: options.attrs || [],
       maxEnrollments: -1
-    }, adminUserContext as any);
+    }, adminUser);
 
     // Enroll the user
     const enrollment = await caClient.enroll({

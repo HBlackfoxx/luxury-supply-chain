@@ -1,6 +1,30 @@
 version: '3.8'
 
+volumes:
+  postgres_data:
+
 services:
+  # PostgreSQL Database for Authentication & User Management
+  postgres:
+    image: postgres:15-alpine
+    container_name: luxury-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: luxury_supply_chain
+      POSTGRES_USER: dbadmin
+      POSTGRES_PASSWORD: SecureDBPassword2024!
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./backend/auth/init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    networks:
+      - luxury-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbadmin -d luxury_supply_chain"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   # LuxeBags Backend (Brand)
   luxebags-backend:
     build: ./backend
@@ -12,17 +36,30 @@ services:
       - PORT=4000
       - BRAND_ID=luxebags
       - ORG_ID=luxebags
-      - USER_ID=admin
-      - JWT_SECRET=luxebags-secret-change-in-production
+      - USER_ID=Admin
+      - JWT_SECRET=${JWT_SECRET:-change-this-secure-secret-min-32-chars}
       - CONSENSUS_API_PORT=4000
       - CUSTOMER_API_PORT=3002
+      - DB_TYPE=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=luxury_supply_chain
+      - POSTGRES_USER=dbadmin
+      - POSTGRES_PASSWORD=SecureDBPassword2024!
+      - INIT_DEFAULT_USERS=true
+      - FABRIC_CRYPTO_PATH=/app/fabric/organizations
+      - CONFIG_PATH=/config/brands/example-brand
+      - IDENTITY_PATH=/app/identities/luxebags
+      - FABRIC_PEER_HOST=peer0.luxebags.luxe-bags.luxury
     volumes:
       - ./backend:/app
-      - ./network/organizations:/app/fabric/organizations:ro
+      - ./config:/config:ro
+      - ./backend/gateway/network/organizations:/app/fabric/organizations:ro
     networks:
       - luxury-network
     depends_on:
       - fabric-network
+      - postgres
 
   # Italian Leather Backend (Supplier)
   italianleather-backend:
@@ -35,17 +72,29 @@ services:
       - PORT=4000
       - BRAND_ID=italianleather
       - ORG_ID=italianleather
-      - USER_ID=admin
+      - USER_ID=Admin
       - JWT_SECRET=italianleather-secret-change-in-production
       - CONSENSUS_API_PORT=4000
       - CUSTOMER_API_PORT=3002
+      - FABRIC_CRYPTO_PATH=/app/fabric/organizations
+      - CONFIG_PATH=/config/brands/example-brand
+      - IDENTITY_PATH=/app/identities/italianleather
+      - FABRIC_PEER_HOST=peer0.italianleather.luxe-bags.luxury
+      - DB_TYPE=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=luxury_supply_chain
+      - POSTGRES_USER=dbadmin
+      - POSTGRES_PASSWORD=SecureDBPassword2024!
     volumes:
       - ./backend:/app
-      - ./network/organizations:/app/fabric/organizations:ro
+      - ./config:/config:ro
+      - ./backend/gateway/network/organizations:/app/fabric/organizations:ro
     networks:
       - luxury-network
     depends_on:
       - fabric-network
+      - postgres
 
   # Craft Workshop Backend (Manufacturer)
   craftworkshop-backend:
@@ -58,17 +107,29 @@ services:
       - PORT=4000
       - BRAND_ID=craftworkshop
       - ORG_ID=craftworkshop
-      - USER_ID=admin
+      - USER_ID=Admin
       - JWT_SECRET=craftworkshop-secret-change-in-production
       - CONSENSUS_API_PORT=4000
       - CUSTOMER_API_PORT=3002
+      - FABRIC_CRYPTO_PATH=/app/fabric/organizations
+      - CONFIG_PATH=/config/brands/example-brand
+      - IDENTITY_PATH=/app/identities/craftworkshop
+      - FABRIC_PEER_HOST=peer0.craftworkshop.luxe-bags.luxury
+      - DB_TYPE=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=luxury_supply_chain
+      - POSTGRES_USER=dbadmin
+      - POSTGRES_PASSWORD=SecureDBPassword2024!
     volumes:
       - ./backend:/app
-      - ./network/organizations:/app/fabric/organizations:ro
+      - ./config:/config:ro
+      - ./backend/gateway/network/organizations:/app/fabric/organizations:ro
     networks:
       - luxury-network
     depends_on:
       - fabric-network
+      - postgres
 
   # Luxury Retail Backend (Retailer)
   luxuryretail-backend:
@@ -81,17 +142,29 @@ services:
       - PORT=4000
       - BRAND_ID=luxuryretail
       - ORG_ID=luxuryretail
-      - USER_ID=admin
+      - USER_ID=Admin
       - JWT_SECRET=luxuryretail-secret-change-in-production
       - CONSENSUS_API_PORT=4000
       - CUSTOMER_API_PORT=3002
+      - FABRIC_CRYPTO_PATH=/app/fabric/organizations
+      - CONFIG_PATH=/config/brands/example-brand
+      - IDENTITY_PATH=/app/identities/luxuryretail
+      - FABRIC_PEER_HOST=peer0.luxuryretail.luxe-bags.luxury
+      - DB_TYPE=postgres
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=luxury_supply_chain
+      - POSTGRES_USER=dbadmin
+      - POSTGRES_PASSWORD=SecureDBPassword2024!
     volumes:
       - ./backend:/app
-      - ./network/organizations:/app/fabric/organizations:ro
+      - ./config:/config:ro
+      - ./backend/gateway/network/organizations:/app/fabric/organizations:ro
     networks:
       - luxury-network
     depends_on:
       - fabric-network
+      - postgres
 
   # Unified Frontend
   frontend:
@@ -123,5 +196,5 @@ services:
 
 networks:
   luxury-network:
-    driver: bridge
-    name: luxury-supply-chain-network
+    external: true
+    name: luxury-supply-chain

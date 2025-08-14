@@ -1,0 +1,183 @@
+# consensus/2check/config/2check-config.yaml
+# Main configuration for 2-Check consensus system
+
+consensus:
+  type: "2-check"
+  version: "1.0"
+  
+  # Basic validation rules
+  validation:
+    require_sender_confirmation: true
+    require_receiver_confirmation: true
+    auto_validate_on_both_confirmations: true
+    allow_batch_operations: true
+    max_batch_size: 100
+    
+  # State configuration
+  states:
+    initial: "CREATED"
+    terminal: ["VALIDATED", "CANCELLED", "RESOLVED"]
+    transitions:
+      CREATED:
+        - SENT
+        - TIMEOUT
+        - CANCELLED
+      SENT:
+        - RECEIVED
+        - DISPUTED
+        - TIMEOUT
+      RECEIVED:
+        - VALIDATED
+        - DISPUTED
+      TIMEOUT:
+        - ESCALATED
+        - RESOLVED
+      DISPUTED:
+        - ESCALATED
+        - RESOLVED
+      ESCALATED:
+        - RESOLVED
+    
+  # Timeout configuration (in hours)
+  timeouts:
+    default: 72
+    reminders:
+      first: 24    # 24 hours before timeout
+      second: 12   # 12 hours before timeout
+      final: 1     # 1 hour before timeout
+    
+    # Category-specific timeouts
+    categories:
+      - name: "high_value"
+        condition:
+          field: "value"
+          operator: "greater_than"
+          value: 10000
+        timeout: 24
+        
+      - name: "perishable"
+        condition:
+          field: "type"
+          operator: "equals"
+          value: "time_sensitive"
+        timeout: 6
+        
+      - name: "trusted_partner"
+        condition:
+          field: "relationship.trust_score"
+          operator: "greater_than"
+          value: 100
+        timeout: 168  # 1 week
+        
+  # Notification settings
+  notifications:
+    enabled: true
+    channels:
+      - type: "email"
+        enabled: true
+        templates_path: "./templates/email"
+      - type: "sms"
+        enabled: false
+        templates_path: "./templates/sms"
+      - type: "in_app"
+        enabled: true
+        templates_path: "./templates/in_app"
+    
+    # When to send notifications
+    triggers:
+      - event: "transaction_sent"
+        notify: ["receiver"]
+        channels: ["email", "in_app"]
+      - event: "reminder"
+        notify: ["pending_party"]
+        channels: ["email", "in_app"]
+      - event: "timeout"
+        notify: ["both_parties", "brand_owner"]
+        channels: ["email", "in_app"]
+      - event: "dispute_created"
+        notify: ["both_parties", "brand_owner"]
+        channels: ["email", "in_app"]
+        
+  # Dispute handling
+  disputes:
+    types:
+      - id: "not_received"
+        name: "Item Not Received"
+        evidence_required:
+          - "shipping_proof"
+          - "tracking_number"
+        auto_resolution_possible: true
+        escalation_timeout: 48
+        
+      - id: "wrong_item"
+        name: "Wrong Item Received"
+        evidence_required:
+          - "photos"
+          - "packing_list"
+          - "original_order"
+        auto_resolution_possible: false
+        immediate_escalation: true
+        
+      - id: "damaged"
+        name: "Item Damaged"
+        evidence_required:
+          - "photos"
+          - "delivery_photos"
+          - "packaging_photos"
+        requires_expert_review: true
+        escalation_timeout: 24
+        
+      - id: "quantity_mismatch"
+        name: "Quantity Mismatch"
+        evidence_required:
+          - "packing_list"
+          - "delivery_receipt"
+          - "photos"
+        auto_resolution_possible: true
+        escalation_timeout: 48
+        
+    # Escalation rules
+    escalation:
+      default_handler: "brand_owner"
+      rules:
+        - condition: "dispute.type == 'not_received' AND elapsed_hours > 48"
+          handler: "brand_owner"
+          priority: "high"
+          
+        - condition: "transaction.value > 50000"
+          handler: "brand_owner"
+          priority: "urgent"
+          auto_notify: true
+          
+        - condition: "participant.trust_score < 50"
+          handler: "brand_compliance"
+          priority: "high"
+          require_additional_evidence: true
+          
+        - condition: "ai.fraud_probability > 0.8"
+          handler: "security_team"
+          priority: "urgent"
+          auto_freeze: true
+          
+  # Emergency stop configuration
+  emergency_stop:
+    enabled: true
+    who_can_trigger:
+      - "any_participant"
+      - "brand_owner"
+      - "ai_system"
+    requires_reason: true
+    auto_notifications: true
+    resolution_required_within: 72  # hours
+    
+  # Batch operations
+  batch_operations:
+    enabled: true
+    max_batch_size: 100
+    allowed_for:
+      - min_trust_score: 100
+      - min_successful_transactions: 50
+    types_allowed:
+      - "similar_items"
+      - "repeat_shipments"
+      - "standard_orders"
