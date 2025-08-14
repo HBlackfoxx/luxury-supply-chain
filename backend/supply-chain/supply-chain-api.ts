@@ -66,8 +66,8 @@ export class SupplyChainAPI {
       
       // Get both contracts (using actual deployed chaincode names)
       const contracts = {
-        supply: network.getContract('luxury-chaincode'),
-        consensus: network.getContract('consensus')
+        supply: network.getContract('luxury-supply-chain'),
+        consensus: network.getContract('2check-consensus')
       };
       
       // Cache for reuse
@@ -99,6 +99,7 @@ export class SupplyChainAPI {
     // Create and manage materials
     this.router.post('/materials', this.createMaterial.bind(this));
     this.router.post('/materials/transfer', this.transferMaterialToManufacturer.bind(this));
+    this.router.post('/materials/:id/confirm-receipt', this.confirmMaterialReceipt.bind(this));
     
     // === MANUFACTURER ROUTES (Craft Workshop) ===
     // Create products from materials
@@ -162,23 +163,10 @@ export class SupplyChainAPI {
 
       const { materialId, type, source, batch, quality, quantity } = req.body;
 
-      if (!materialId || !type || !source || !batch) {
+      if (!materialId || !type || !source || !batch || !quantity) {
         res.status(400).json({ error: 'Missing required material fields' });
         return;
       }
-
-      // Store material data (could be off-chain or on-chain)
-      // For now, we'll track it as metadata in a transaction
-      const material = {
-        id: materialId,
-        type, // leather, fabric, metal, etc.
-        source,
-        supplier: req.user.organization,
-        batch,
-        quality,
-        quantity,
-        createdAt: new Date().toISOString()
-      };
 
       // Get contracts for current user
       const contracts = await this.getContractsForUser(
@@ -186,28 +174,29 @@ export class SupplyChainAPI {
         req.user!.id
       );
 
-      // Create a consensus transaction to track material creation
-      if (contracts.consensus) {
-        await this.transactionHandler.submitTransaction(
-          contracts.consensus,
-          'SubmitTransaction',
-          {
-            arguments: [
-              `MAT-${Date.now()}`,
-              req.user.organization,
-              req.user.organization, // self-transaction for creation
-              'material_creation',
-              materialId,
-              JSON.stringify(material)
-            ]
-          }
-        );
+      // Create material inventory on blockchain
+      const result = await this.transactionHandler.submitTransaction(
+        contracts.supply,
+        'CreateMaterialInventory',
+        {
+          arguments: [
+            materialId,
+            type,
+            batch,
+            quantity.toString()
+          ]
+        }
+      );
+
+      if (!result.success) {
+        res.status(500).json({ error: result.error });
+        return;
       }
 
       res.json({
         success: true,
         materialId,
-        message: 'Material created successfully'
+        message: 'Material inventory created successfully'
       });
     } catch (error) {
       console.error('Error creating material:', error);
@@ -222,7 +211,7 @@ export class SupplyChainAPI {
     try {
       const { materialId, manufacturer, quantity } = req.body;
 
-      if (!materialId || !manufacturer) {
+      if (!materialId || !manufacturer || !quantity) {
         res.status(400).json({ error: 'Missing required fields' });
         return;
       }
@@ -233,16 +222,47 @@ export class SupplyChainAPI {
         req.user!.id
       );
 
-      // Create B2B transfer transaction
-      const transactionId = `TRX-MAT-${Date.now()}`;
-      
+      const transferId = `MAT-TRANSFER-${Date.now()}`;
+
+      // Map manufacturer organization name to MSP ID
+      let manufacturerMspId = '';
+      switch(manufacturer) {
+        case 'luxebags': manufacturerMspId = 'LuxeBagsMSP'; break;
+        case 'italianleather': manufacturerMspId = 'ItalianLeatherMSP'; break;
+        case 'craftworkshop': manufacturerMspId = 'CraftWorkshopMSP'; break;
+        case 'luxuryretail': manufacturerMspId = 'LuxuryRetailMSP'; break;
+        default: manufacturerMspId = manufacturer.charAt(0).toUpperCase() + manufacturer.slice(1) + 'MSP';
+      }
+
+      // Transfer material inventory on blockchain
+      console.log('Transferring material:', { transferId, materialId, manufacturerMspId, quantity });
+      const result = await this.transactionHandler.submitTransaction(
+        contracts.supply,
+        'TransferMaterialInventory',
+        {
+          arguments: [
+            transferId,
+            materialId,
+            manufacturerMspId,
+            quantity.toString()
+          ]
+        }
+      );
+
+      if (!result.success) {
+        console.error('Material transfer failed:', result.error);
+        res.status(500).json({ error: result.error || 'Failed to transfer material' });
+        return;
+      }
+
+      // Also submit to consensus for 2-check validation
       if (contracts.consensus) {
         await this.transactionHandler.submitTransaction(
           contracts.consensus,
           'SubmitTransaction',
           {
             arguments: [
-              transactionId,
+              transferId,
               req.user!.organization,
               manufacturer,
               'material_transfer',
@@ -255,12 +275,79 @@ export class SupplyChainAPI {
 
       res.json({
         success: true,
-        transactionId,
+        transferId,
         message: 'Material transfer initiated. Awaiting manufacturer confirmation.'
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error transferring material:', error);
-      res.status(500).json({ error: 'Failed to transfer material' });
+      console.error('Error details:', error.message || error);
+      res.status(500).json({ error: error.message || 'Failed to transfer material' });
+    }
+  }
+
+  /**
+   * Confirm material receipt (Manufacturer)
+   */
+  private async confirmMaterialReceipt(req: ApiRequest, res: Response): Promise<void> {
+    try {
+      const { id: materialId } = req.params;
+      const { transferId } = req.body;
+
+      console.log('Confirming material receipt:', { 
+        materialId, 
+        transferId, 
+        user: req.user?.organization,
+        body: req.body 
+      });
+
+      if (!transferId) {
+        console.error('Missing transfer ID in request body');
+        res.status(400).json({ error: 'Missing transfer ID' });
+        return;
+      }
+
+      // Get contracts for current user
+      const contracts = await this.getContractsForUser(
+        req.user!.organization,
+        req.user!.id
+      );
+
+      // Confirm material receipt in inventory
+      console.log('Calling ConfirmMaterialReceived with:', { transferId, materialId });
+      const result = await this.transactionHandler.submitTransaction(
+        contracts.supply,
+        'ConfirmMaterialReceived',
+        {
+          arguments: [transferId, materialId]
+        }
+      );
+
+      if (!result.success) {
+        console.error('Failed to confirm material receipt:', result.error);
+        res.status(500).json({ error: result.error || 'Failed to confirm material receipt' });
+        return;
+      }
+
+      // Also confirm in consensus
+      if (contracts.consensus) {
+        await this.transactionHandler.submitTransaction(
+          contracts.consensus,
+          'ConfirmReceived',
+          {
+            arguments: [transferId, req.user!.organization]
+          }
+        );
+      }
+
+      res.json({
+        success: true,
+        message: 'Material receipt confirmed'
+      });
+    } catch (error: any) {
+      console.error('Error confirming material receipt:', error);
+      console.error('Error details:', error.message || error);
+      console.error('Stack trace:', error.stack);
+      res.status(500).json({ error: error.message || 'Failed to confirm material receipt' });
     }
   }
 
@@ -278,7 +365,10 @@ export class SupplyChainAPI {
       }
 
       const { brand, name, type, serialNumber, materials } = req.body;
-      const productId = `${brand.toUpperCase()}-${type.toUpperCase()}-${Date.now()}`;
+      // Use a deterministic ID that won't vary between peers
+      const timestamp = Math.floor(Date.now() / 1000); // Use seconds for less variation
+      const productId = `${brand.toUpperCase()}-${type.toUpperCase()}-${timestamp}-${Math.random().toString(36).substr(2, 9)}`;
+      const finalSerialNumber = serialNumber || `SN-${timestamp}`;
 
       // Get contracts for current user
       const contracts = await this.getContractsForUser(
@@ -291,7 +381,7 @@ export class SupplyChainAPI {
         contracts.supply,
         'CreateProduct',
         {
-          arguments: [productId, brand, name, type, serialNumber || `SN-${Date.now()}`]
+          arguments: [productId, brand, name, type, finalSerialNumber]
         }
       );
 
@@ -405,12 +495,13 @@ export class SupplyChainAPI {
 
       const transferId = `TRANSFER-${Date.now()}`;
 
-      // Initiate transfer in supply chain contract
+      // Initiate transfer in supply chain contract with consensus
+      // This creates the transfer AND submits to consensus in one call
       const result = await this.transactionHandler.submitTransaction(
         contracts.supply,
-        'InitiateB2BTransfer',
+        'InitiateTransferWithConsensus',
         {
-          arguments: [transferId, productId, toOrganization, transferType || 'standard']
+          arguments: [transferId, productId, toOrganization, 'SUPPLY_CHAIN']
         }
       );
 
@@ -419,23 +510,8 @@ export class SupplyChainAPI {
         return;
       }
 
-      // Also create consensus transaction for 2-Check
-      if (contracts.consensus) {
-        await this.transactionHandler.submitTransaction(
-          contracts.consensus,
-          'SubmitTransaction',
-          {
-            arguments: [
-              transferId,
-              req.user!.organization,
-              toOrganization,
-              'product_transfer',
-              productId,
-              JSON.stringify({ transferType })
-            ]
-          }
-        );
-      }
+      // Consensus is already handled by InitiateTransferWithConsensus
+      // No need for duplicate submission
 
       res.json({
         success: true,
@@ -461,21 +537,13 @@ export class SupplyChainAPI {
         req.user!.id
       );
 
-      // Confirm in supply chain contract
+      // Confirm in supply chain contract WITH consensus
+      // This updates both supply chain and consensus in one call
       await this.transactionHandler.submitTransaction(
         contracts.supply,
-        'ConfirmSent',
+        'ConfirmSentWithConsensus',
         {
           arguments: [transferId]
-        }
-      );
-
-      // Also confirm in consensus contract
-      await this.transactionHandler.submitTransaction(
-        contracts.consensus,
-        'ConfirmSent',
-        {
-          arguments: [transferId, req.user!.organization]
         }
       );
 
@@ -503,21 +571,13 @@ export class SupplyChainAPI {
         req.user!.id
       );
 
-      // Confirm in supply chain contract
+      // Confirm in supply chain contract WITH consensus
+      // This updates both supply chain and consensus in one call
       await this.transactionHandler.submitTransaction(
         contracts.supply,
-        'ConfirmReceived',
+        'ConfirmReceivedWithConsensus',
         {
           arguments: [transferId]
-        }
-      );
-
-      // Also confirm in consensus contract
-      await this.transactionHandler.submitTransaction(
-        contracts.consensus,
-        'ConfirmReceived',
-        {
-          arguments: [transferId, req.user!.organization]
         }
       );
 
@@ -631,14 +691,33 @@ export class SupplyChainAPI {
       );
 
       try {
-        const result = await contracts.supply.evaluateTransaction('GetAllProducts');
-        const products = JSON.parse(result.toString());
+        const result = await contracts.supply.evaluateTransaction('SupplyChainContract:GetAllProducts');
+        // Convert Uint8Array to string properly
+        const resultString = Buffer.from(result).toString('utf8');
+        const products = JSON.parse(resultString);
 
-        // Filter by organization
+        // Map organization to MSP ID for filtering (same as getMaterials)
+        let userMspId = '';
+        switch(req.user!.organization) {
+          case 'luxebags': userMspId = 'LuxeBagsMSP'; break;
+          case 'italianleather': userMspId = 'ItalianLeatherMSP'; break;
+          case 'craftworkshop': userMspId = 'CraftWorkshopMSP'; break;
+          case 'luxuryretail': userMspId = 'LuxuryRetailMSP'; break;
+          default: userMspId = req.user!.organization.charAt(0).toUpperCase() + req.user!.organization.slice(1) + 'MSP';
+        }
+
+        // Filter by organization - products store MSP IDs not organization names
         const orgProducts = products.filter((p: any) => 
-          p.currentOwner === req.user?.organization || 
-          p.currentLocation === req.user?.organization
+          p.currentOwner === userMspId || 
+          p.currentLocation === userMspId
         );
+
+        // Sort products by createdAt in descending order (newest first)
+        orgProducts.sort((a: any, b: any) => {
+          const dateA = new Date(a.createdAt || 0).getTime();
+          const dateB = new Date(b.createdAt || 0).getTime();
+          return dateB - dateA;
+        });
 
         res.json(orgProducts);
       } catch (chainError: any) {
@@ -703,17 +782,88 @@ export class SupplyChainAPI {
         req.user!.id
       );
 
-      // Query transfers where current org is sender or receiver
+      // Query all material inventories from blockchain
       const result = await contracts.supply.evaluateTransaction(
-        'GetPendingTransfers',
-        req.user!.organization
+        'SupplyChainContract:GetAllMaterialInventories'
       );
       
-      const transfers = JSON.parse(result.toString());
-      res.json(transfers);
+      // Convert Uint8Array to string properly
+      const resultString = Buffer.from(result).toString('utf8');
+      const allInventories = JSON.parse(resultString);
+      const pendingTransfers: any[] = [];
+      
+      // Map current organization to MSP ID for comparison
+      let currentOrgMspId = '';
+      switch(req.user!.organization) {
+        case 'luxebags': currentOrgMspId = 'LuxeBagsMSP'; break;
+        case 'italianleather': currentOrgMspId = 'ItalianLeatherMSP'; break;
+        case 'craftworkshop': currentOrgMspId = 'CraftWorkshopMSP'; break;
+        case 'luxuryretail': currentOrgMspId = 'LuxuryRetailMSP'; break;
+        default: currentOrgMspId = req.user!.organization.charAt(0).toUpperCase() + req.user!.organization.slice(1) + 'MSP';
+      }
+      
+      // Track processed transfers to avoid duplicates
+      const processedTransfers = new Set<string>();
+      
+      // Find transfers that are pending confirmation for the current organization
+      allInventories.forEach((inventory: any) => {
+        if (inventory.transfers && inventory.transfers.length > 0) {
+          inventory.transfers.forEach((transfer: any) => {
+            // Skip if already processed (avoid duplicates)
+            if (processedTransfers.has(transfer.transferId)) {
+              return;
+            }
+            
+            // For material transfers:
+            // - Sender sees it in their inventory with verified=false
+            // - Receiver needs to confirm, so only show to receiver
+            // Only show to receiver (to === currentOrgMspId) for confirmation
+            if (!transfer.verified && transfer.to === currentOrgMspId) {
+              // Map MSP IDs back to organization names for display
+              let fromOrg = transfer.from;
+              let toOrg = transfer.to;
+              
+              // Convert MSP IDs to organization names
+              const mspToOrg: Record<string, string> = {
+                'LuxeBagsMSP': 'luxebags',
+                'ItalianLeatherMSP': 'italianleather',
+                'CraftWorkshopMSP': 'craftworkshop',
+                'LuxuryRetailMSP': 'luxuryretail'
+              };
+              
+              fromOrg = mspToOrg[transfer.from] || transfer.from;
+              toOrg = mspToOrg[transfer.to] || transfer.to;
+              
+              pendingTransfers.push({
+                transferId: transfer.transferId,
+                materialId: inventory.materialId,
+                materialType: inventory.type,
+                from: fromOrg,
+                to: toOrg,
+                quantity: transfer.quantity,
+                createdAt: transfer.transferDate || new Date().toISOString(),
+                status: 'PENDING_CONFIRMATION'
+              });
+              
+              // Mark as processed to avoid duplicates
+              processedTransfers.add(transfer.transferId);
+            }
+          });
+        }
+      });
+      
+      // Sort pending transfers by date (newest first)
+      pendingTransfers.sort((a, b) => {
+        const dateA = new Date(a.createdAt).getTime();
+        const dateB = new Date(b.createdAt).getTime();
+        return dateB - dateA;
+      });
+      
+      res.json(pendingTransfers);
     } catch (error) {
       console.error('Error fetching transfers:', error);
-      res.status(500).json({ error: 'Failed to fetch transfers' });
+      // Return empty array if the function doesn't exist yet
+      res.json([]);
     }
   }
 
@@ -722,12 +872,64 @@ export class SupplyChainAPI {
    */
   private async getMaterials(req: ApiRequest, res: Response): Promise<void> {
     try {
-      // This would query materials owned by or transferred to the organization
-      // For now, return empty array as materials are tracked in metadata
-      res.json([]);
+      // Get contracts for current user
+      const contracts = await this.getContractsForUser(
+        req.user!.organization,
+        req.user!.id
+      );
+
+      // Query all material inventories from blockchain
+      const result = await contracts.supply.evaluateTransaction(
+        'SupplyChainContract:GetAllMaterialInventories'
+      );
+      
+      // Convert Uint8Array to string properly
+      const resultString = Buffer.from(result).toString('utf8');
+      console.log('Converted result:', resultString.substring(0, 100));
+      const allInventories = JSON.parse(resultString);
+      const userMaterials: any[] = [];
+      
+      // Filter materials owned by the current organization
+      // Map organization to MSP ID format (handle case differences)
+      let mspId = '';
+      switch(req.user!.organization) {
+        case 'luxebags': mspId = 'LuxeBagsMSP'; break;
+        case 'italianleather': mspId = 'ItalianLeatherMSP'; break;  // Capital L in Leather
+        case 'craftworkshop': mspId = 'CraftWorkshopMSP'; break;  // Capital W in Workshop
+        case 'luxuryretail': mspId = 'LuxuryRetailMSP'; break;
+        default: mspId = req.user!.organization.charAt(0).toUpperCase() + req.user!.organization.slice(1) + 'MSP';
+      }
+      
+      allInventories.forEach((inventory: any) => {
+        if (inventory.owner === mspId) {
+          userMaterials.push({
+            id: inventory.materialId,
+            materialId: inventory.materialId,
+            type: inventory.type,
+            source: inventory.supplier,
+            batch: inventory.batch,
+            quantity: inventory.available,
+            totalReceived: inventory.totalReceived,
+            used: inventory.used,
+            owner: inventory.owner
+          });
+        }
+      });
+      
+      // Sort materials by ID in descending order (newest first)
+      // Material IDs often contain timestamps like LEATHER-TEST-1755122596
+      userMaterials.sort((a, b) => {
+        // Try to extract timestamp from ID if present
+        const timestampA = a.materialId.match(/\d{10,}/)?.[0] || a.materialId;
+        const timestampB = b.materialId.match(/\d{10,}/)?.[0] || b.materialId;
+        return timestampB.localeCompare(timestampA);
+      });
+      
+      res.json(userMaterials);
     } catch (error) {
       console.error('Error fetching materials:', error);
-      res.status(500).json({ error: 'Failed to fetch materials' });
+      // Return empty array if the function doesn't exist yet
+      res.json([]);
     }
   }
 

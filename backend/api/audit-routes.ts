@@ -120,11 +120,11 @@ export function createAuditRoutes(pool: Pool) {
       const user = (req as any).user;
 
       let baseQuery = '';
-      // Format the interval properly for PostgreSQL
-      const params: any[] = [`${days} days`];
+      const params: any[] = [];
+      let intervalClause = `NOW() - INTERVAL '${days} days'`;
 
       if (user?.role !== 'admin') {
-        baseQuery = ` AND u.organization = $2`;
+        baseQuery = ` AND u.organization = $1`;
         params.push(user.organization);
       }
 
@@ -135,7 +135,7 @@ export function createAuditRoutes(pool: Pool) {
           COUNT(*) as count
         FROM audit_log al
         LEFT JOIN users u ON al.user_id = u.id
-        WHERE al.created_at >= NOW() - INTERVAL $1
+        WHERE al.created_at >= ${intervalClause}
         ${baseQuery}
         GROUP BY action
         ORDER BY count DESC
@@ -148,7 +148,7 @@ export function createAuditRoutes(pool: Pool) {
           COUNT(*) as count
         FROM audit_log al
         LEFT JOIN users u ON al.user_id = u.id
-        WHERE al.created_at >= NOW() - INTERVAL $1
+        WHERE al.created_at >= ${intervalClause}
           AND entity_type IS NOT NULL
         ${baseQuery}
         GROUP BY entity_type
@@ -162,7 +162,7 @@ export function createAuditRoutes(pool: Pool) {
           COUNT(*) as count
         FROM audit_log al
         LEFT JOIN users u ON al.user_id = u.id
-        WHERE al.created_at >= NOW() - INTERVAL $1
+        WHERE al.created_at >= ${intervalClause}
         ${baseQuery}
         GROUP BY DATE(al.created_at)
         ORDER BY date DESC
@@ -178,7 +178,7 @@ export function createAuditRoutes(pool: Pool) {
           COUNT(*) as action_count
         FROM audit_log al
         LEFT JOIN users u ON al.user_id = u.id
-        WHERE al.created_at >= NOW() - INTERVAL $1
+        WHERE al.created_at >= ${intervalClause}
         ${baseQuery}
         GROUP BY al.user_id, u.name, u.email, u.organization
         ORDER BY action_count DESC

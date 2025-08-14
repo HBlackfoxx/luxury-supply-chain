@@ -57,7 +57,7 @@ export class ConsensusSystem {
     this.orchestrator = new ConsensusOrchestrator({
       fabricConfig: {
         channelName: 'luxury-supply-chain',
-        chaincodeName: 'consensus',
+        chaincodeName: '2check-consensus',
         mspId: brandId,
         walletPath: './wallet',
         connectionProfile: this.configManager.getConnectionProfile()

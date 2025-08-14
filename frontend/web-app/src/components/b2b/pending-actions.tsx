@@ -17,6 +17,8 @@ interface PendingTransaction {
   createdAt: string
   value: number
   status: 'PENDING_CONFIRMATION'
+  transferType?: 'product' | 'material'
+  materialId?: string
 }
 
 export function PendingActions() {
@@ -25,29 +27,49 @@ export function PendingActions() {
   const [selectedDispute, setSelectedDispute] = useState<PendingTransaction | null>(null)
   const api = useApi()
 
-  // Fetch pending transactions
+  // Fetch pending transactions (both product and material transfers)
   const { data: pendingTransactions, isLoading } = useQuery({
     queryKey: ['pending-transactions', user?.organization],
     queryFn: async () => {
       if (!user?.organization || !api) return []
-      const response = await api.get<{
-        count: number
-        transactions: any[]
-      }>(`/api/consensus/transactions/pending/${user.organization}`)
       
-      // Transform backend transactions to match frontend structure
-      const transformed = response.data.transactions.map((tx: any) => ({
+      // Fetch both product transfers and material transfers
+      const [consensusResponse, transfersResponse] = await Promise.all([
+        api.get<{
+          count: number
+          transactions: any[]
+        }>(`/api/consensus/transactions/pending/${user.organization}`).catch(() => ({ data: { transactions: [] } })),
+        api.get<any[]>('/api/supply-chain/transfers/pending').catch(() => ({ data: [] }))
+      ])
+      
+      // Transform consensus transactions
+      const consensusTransformed = consensusResponse.data.transactions.map((tx: any) => ({
         id: tx.id,
         type: tx.sender === user.organization ? 'SENT' as const : 'RECEIVED' as const,
         itemId: tx.itemDetails?.itemId || tx.metadata?.itemId || '',
-        itemDescription: tx.itemDetails?.description || tx.metadata?.itemDescription || 'Item',
+        itemDescription: tx.itemDetails?.description || tx.metadata?.itemDescription || 'Product',
         partner: tx.sender === user.organization ? tx.receiver : tx.sender,
         value: tx.value || 0,
         status: 'PENDING_CONFIRMATION' as const,
-        createdAt: tx.createdAt
+        createdAt: tx.createdAt,
+        transferType: 'product' as const
       }))
       
-      return transformed
+      // Transform material transfers
+      const materialTransformed = transfersResponse.data.map((transfer: any) => ({
+        id: transfer.transferId || transfer.id,
+        type: transfer.from === user.organization ? 'SENT' as const : 'RECEIVED' as const,
+        itemId: transfer.materialId,
+        itemDescription: `Material: ${transfer.materialType || transfer.materialId}`,
+        partner: transfer.from === user.organization ? transfer.to : transfer.from,
+        value: transfer.quantity || 0,
+        status: 'PENDING_CONFIRMATION' as const,
+        createdAt: transfer.createdAt || new Date().toISOString(),
+        transferType: 'material' as const,
+        materialId: transfer.materialId
+      }))
+      
+      return [...consensusTransformed, ...materialTransformed]
     },
     enabled: !!user?.organization && !!api,
   })
@@ -80,16 +102,40 @@ export function PendingActions() {
     },
   })
 
-  const handleConfirm = (transaction: PendingTransaction) => {
-    const evidence = {
-      timestamp: new Date().toISOString(),
-      notes: 'Confirmed via web portal',
-    }
+  // Confirm material receipt mutation
+  const confirmMaterialReceiptMutation = useMutation({
+    mutationFn: async ({ materialId, transferId }: { materialId: string; transferId: string }) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/materials/${materialId}/confirm-receipt`, {
+        transferId
+      })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['pending-transactions'] })
+      queryClient.invalidateQueries({ queryKey: ['materials'] })
+    },
+  })
 
-    if (transaction.type === 'SENT') {
-      confirmSentMutation.mutate({ txId: transaction.id, evidence })
+  const handleConfirm = (transaction: PendingTransaction) => {
+    // Handle material transfers differently
+    if (transaction.transferType === 'material' && transaction.type === 'RECEIVED') {
+      confirmMaterialReceiptMutation.mutate({ 
+        materialId: transaction.materialId || transaction.itemId, 
+        transferId: transaction.id 
+      })
     } else {
-      confirmReceivedMutation.mutate({ txId: transaction.id, evidence })
+      // Handle product transfers
+      const evidence = {
+        timestamp: new Date().toISOString(),
+        notes: 'Confirmed via web portal',
+      }
+
+      if (transaction.type === 'SENT') {
+        confirmSentMutation.mutate({ txId: transaction.id, evidence })
+      } else {
+        confirmReceivedMutation.mutate({ txId: transaction.id, evidence })
+      }
     }
   }
 

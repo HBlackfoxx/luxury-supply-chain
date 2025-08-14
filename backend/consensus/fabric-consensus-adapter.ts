@@ -39,7 +39,7 @@ export class FabricConsensusAdapter extends EventEmitter {
     transactionHandler: TransactionHandler,
     eventListener: EventListenerManager,
     channelName: string = 'luxury-supply-chain',
-    chaincodeName: string = 'consensus'
+    chaincodeName: string = '2check-consensus'
   ) {
     super();
     this.stateManager = stateManager;

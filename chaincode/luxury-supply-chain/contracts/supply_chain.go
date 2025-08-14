@@ -3,6 +3,8 @@ package contracts
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
@@ -61,7 +63,7 @@ func (s *SupplyChainContract) CreateProduct(ctx contractapi.TransactionContextIn
 	return ctx.GetStub().PutState(id, productJSON)
 }
 
-// AddMaterial adds material information to a product
+// AddMaterial adds material information to a product WITH VALIDATION
 func (s *SupplyChainContract) AddMaterial(ctx contractapi.TransactionContextInterface,
 	productID string, materialID string, materialType string, source string, 
 	supplier string, batch string, verification string) error {
@@ -76,13 +78,65 @@ func (s *SupplyChainContract) AddMaterial(ctx contractapi.TransactionContextInte
 		return fmt.Errorf("cannot add materials to product in status: %s", product.Status)
 	}
 
+	// Get manufacturer identity
+	manufacturer, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get manufacturer identity: %v", err)
+	}
+
+	// Verify manufacturer owns the product
+	if product.CurrentOwner != manufacturer {
+		return fmt.Errorf("only the product owner can add materials")
+	}
+
+	// CRITICAL: Verify material inventory exists and is owned by manufacturer
+	inventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, manufacturer)
+	inventoryJSON, err := ctx.GetStub().GetState(inventoryKey)
+	if err != nil {
+		return fmt.Errorf("failed to read material inventory: %v", err)
+	}
+	if inventoryJSON == nil {
+		return fmt.Errorf("material %s not found in %s's inventory - material must be properly transferred first", materialID, manufacturer)
+	}
+
+	var inventory MaterialInventory
+	err = json.Unmarshal(inventoryJSON, &inventory)
+	if err != nil {
+		return err
+	}
+
+	// Check if material is available
+	if inventory.Available <= 0 {
+		return fmt.Errorf("insufficient material %s in inventory: available=%.2f", materialID, inventory.Available)
+	}
+
+	// Deduct from inventory (assuming 1 unit used, could be parameterized)
+	usageAmount := 1.0
+	if inventory.Available < usageAmount {
+		return fmt.Errorf("insufficient material %s: need %.2f, have %.2f", materialID, usageAmount, inventory.Available)
+	}
+
+	inventory.Available -= usageAmount
+	inventory.Used += usageAmount
+
+	// Update inventory
+	updatedInventoryJSON, err := json.Marshal(inventory)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(inventoryKey, updatedInventoryJSON)
+	if err != nil {
+		return err
+	}
+
+	// Add material to product with verified supplier
 	material := Material{
 		ID:           materialID,
 		Type:         materialType,
 		Source:       source,
-		Supplier:     supplier,
+		Supplier:     inventory.Supplier, // Use verified supplier from inventory
 		Batch:        batch,
-		Verification: verification,
+		Verification: "verified_from_inventory",
 		ReceivedDate: time.Now().Format(time.RFC3339),
 	}
 
@@ -132,7 +186,20 @@ func (s *SupplyChainContract) AddQualityCheckpoint(ctx contractapi.TransactionCo
 
 // InitiateTransfer starts a B2B transfer with 2-Check consensus
 func (s *SupplyChainContract) InitiateTransfer(ctx contractapi.TransactionContextInterface,
-	transferID string, productID string, to string, transferType TransferType) error {
+	transferID string, productID string, to string, transferTypeStr string) error {
+	
+	// Convert string to TransferType
+	var transferType TransferType
+	switch transferTypeStr {
+	case "SUPPLY_CHAIN":
+		transferType = TransferTypeSupplyChain
+	case "OWNERSHIP":
+		transferType = TransferTypeOwnership
+	case "RETURN":
+		transferType = TransferTypeReturn
+	default:
+		transferType = TransferTypeSupplyChain
+	}
 
 	// Check if transfer already exists
 	existingTransfer, _ := s.GetTransfer(ctx, transferID)
@@ -446,6 +513,352 @@ func (s *SupplyChainContract) queryProducts(ctx contractapi.TransactionContextIn
 			return nil, err
 		}
 		products = append(products, &product)
+	}
+
+	return products, nil
+}
+
+// ============= MATERIAL INVENTORY MANAGEMENT =============
+
+// CreateMaterialInventory creates initial material inventory for a supplier
+func (s *SupplyChainContract) CreateMaterialInventory(ctx contractapi.TransactionContextInterface,
+	materialID string, materialType string, batch string, quantityStr string) error {
+	
+	// Parse quantity
+	quantity, err := strconv.ParseFloat(quantityStr, 64)
+	if err != nil {
+		return fmt.Errorf("invalid quantity: %v", err)
+	}
+
+	// Get supplier identity
+	supplier, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get supplier identity: %v", err)
+	}
+
+	// Check if inventory already exists
+	inventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, supplier)
+	existing, err := ctx.GetStub().GetState(inventoryKey)
+	if err != nil {
+		return err
+	}
+	if existing != nil {
+		return fmt.Errorf("material inventory %s already exists for %s", materialID, supplier)
+	}
+
+	// Create new inventory
+	inventory := MaterialInventory{
+		ID:            inventoryKey,
+		MaterialID:    materialID,
+		Batch:         batch,
+		Owner:         supplier,
+		Supplier:      supplier,
+		Type:          materialType,
+		TotalReceived: quantity,
+		Available:     quantity,
+		Used:          0,
+		Transfers:     []MaterialTransferRecord{},
+	}
+
+	inventoryJSON, err := json.Marshal(inventory)
+	if err != nil {
+		return err
+	}
+
+	return ctx.GetStub().PutState(inventoryKey, inventoryJSON)
+}
+
+// TransferMaterialInventory transfers material from one organization to another
+func (s *SupplyChainContract) TransferMaterialInventory(ctx contractapi.TransactionContextInterface,
+	transferID string, materialID string, toOrganization string, quantityStr string) error {
+	
+	// Parse quantity
+	quantity, err := strconv.ParseFloat(quantityStr, 64)
+	if err != nil {
+		return fmt.Errorf("invalid quantity: %v", err)
+	}
+
+	// Get sender identity
+	fromOrganization, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get sender identity: %v", err)
+	}
+
+	// Get sender's inventory
+	senderInventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, fromOrganization)
+	senderInventoryJSON, err := ctx.GetStub().GetState(senderInventoryKey)
+	if err != nil {
+		return err
+	}
+	if senderInventoryJSON == nil {
+		return fmt.Errorf("material %s not found in %s's inventory", materialID, fromOrganization)
+	}
+
+	var senderInventory MaterialInventory
+	err = json.Unmarshal(senderInventoryJSON, &senderInventory)
+	if err != nil {
+		return err
+	}
+
+	// Check available quantity
+	if senderInventory.Available < quantity {
+		return fmt.Errorf("insufficient material: requested %.2f, available %.2f", quantity, senderInventory.Available)
+	}
+
+	// Deduct from sender
+	senderInventory.Available -= quantity
+	transferRecord := MaterialTransferRecord{
+		TransferID:   transferID,
+		From:         fromOrganization,
+		To:           toOrganization,
+		Quantity:     quantity,
+		TransferDate: time.Now().Format(time.RFC3339),
+		Verified:     false, // Will be set to true after 2-check consensus
+	}
+	senderInventory.Transfers = append(senderInventory.Transfers, transferRecord)
+
+	// Update sender inventory
+	updatedSenderJSON, err := json.Marshal(senderInventory)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(senderInventoryKey, updatedSenderJSON)
+	if err != nil {
+		return err
+	}
+
+	// Create or update receiver's inventory
+	receiverInventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, toOrganization)
+	receiverInventoryJSON, err := ctx.GetStub().GetState(receiverInventoryKey)
+	if err != nil {
+		return err
+	}
+
+	var receiverInventory MaterialInventory
+	if receiverInventoryJSON == nil {
+		// Create new inventory for receiver
+		receiverInventory = MaterialInventory{
+			ID:            receiverInventoryKey,
+			MaterialID:    materialID,
+			Batch:         senderInventory.Batch,
+			Owner:         toOrganization,
+			Supplier:      senderInventory.Supplier, // Original supplier
+			Type:          senderInventory.Type,
+			TotalReceived: 0, // Will be updated after confirmation
+			Available:     0, // Will be updated after confirmation
+			Used:          0,
+			Transfers:     []MaterialTransferRecord{},
+		}
+	} else {
+		err = json.Unmarshal(receiverInventoryJSON, &receiverInventory)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Add pending transfer (will be confirmed through 2-check)
+	receiverInventory.Transfers = append(receiverInventory.Transfers, transferRecord)
+
+	// Update receiver inventory
+	updatedReceiverJSON, err := json.Marshal(receiverInventory)
+	if err != nil {
+		return err
+	}
+
+	return ctx.GetStub().PutState(receiverInventoryKey, updatedReceiverJSON)
+}
+
+// ConfirmMaterialReceived confirms material receipt and updates inventory
+func (s *SupplyChainContract) ConfirmMaterialReceived(ctx contractapi.TransactionContextInterface,
+	transferID string, materialID string) error {
+
+	// Get receiver identity
+	receiver, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get receiver identity: %v", err)
+	}
+
+	// Get receiver's inventory
+	inventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, receiver)
+	inventoryJSON, err := ctx.GetStub().GetState(inventoryKey)
+	if err != nil {
+		return err
+	}
+	if inventoryJSON == nil {
+		return fmt.Errorf("material inventory not found for %s", receiver)
+	}
+
+	var inventory MaterialInventory
+	err = json.Unmarshal(inventoryJSON, &inventory)
+	if err != nil {
+		return err
+	}
+
+	// Find and verify the transfer
+	var transferFound bool
+	var transferQuantity float64
+	for i, transfer := range inventory.Transfers {
+		if transfer.TransferID == transferID && transfer.To == receiver {
+			if transfer.Verified {
+				return fmt.Errorf("transfer %s already confirmed", transferID)
+			}
+			inventory.Transfers[i].Verified = true
+			transferQuantity = transfer.Quantity
+			transferFound = true
+			break
+		}
+	}
+
+	if !transferFound {
+		return fmt.Errorf("transfer %s not found for material %s", transferID, materialID)
+	}
+
+	// Update quantities after confirmation
+	inventory.TotalReceived += transferQuantity
+	inventory.Available += transferQuantity
+
+	// Update receiver's inventory
+	updatedInventoryJSON, err := json.Marshal(inventory)
+	if err != nil {
+		return err
+	}
+	
+	err = ctx.GetStub().PutState(inventoryKey, updatedInventoryJSON)
+	if err != nil {
+		return err
+	}
+	
+	// Also update sender's inventory to mark transfer as verified
+	// First, find the sender from the transfer record
+	var senderMSP string
+	for _, transfer := range inventory.Transfers {
+		if transfer.TransferID == transferID {
+			senderMSP = transfer.From
+			break
+		}
+	}
+	
+	// Get sender's inventory
+	senderInventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, senderMSP)
+	senderInventoryJSON, err := ctx.GetStub().GetState(senderInventoryKey)
+	if err != nil {
+		return err
+	}
+	
+	if senderInventoryJSON != nil {
+		var senderInventory MaterialInventory
+		err = json.Unmarshal(senderInventoryJSON, &senderInventory)
+		if err != nil {
+			return err
+		}
+		
+		// Mark the transfer as verified in sender's inventory
+		for i, transfer := range senderInventory.Transfers {
+			if transfer.TransferID == transferID {
+				senderInventory.Transfers[i].Verified = true
+				break
+			}
+		}
+		
+		// Update sender's inventory
+		updatedSenderJSON, err := json.Marshal(senderInventory)
+		if err != nil {
+			return err
+		}
+		
+		err = ctx.GetStub().PutState(senderInventoryKey, updatedSenderJSON)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+// GetMaterialInventory retrieves material inventory for an organization
+func (s *SupplyChainContract) GetMaterialInventory(ctx contractapi.TransactionContextInterface,
+	materialID string, organization string) (*MaterialInventory, error) {
+
+	inventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, organization)
+	inventoryJSON, err := ctx.GetStub().GetState(inventoryKey)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read inventory: %v", err)
+	}
+	if inventoryJSON == nil {
+		return nil, fmt.Errorf("inventory not found for material %s and organization %s", materialID, organization)
+	}
+
+	var inventory MaterialInventory
+	err = json.Unmarshal(inventoryJSON, &inventory)
+	if err != nil {
+		return nil, err
+	}
+
+	return &inventory, nil
+}
+
+// GetAllMaterialInventories returns all material inventories from the blockchain
+func (s *SupplyChainContract) GetAllMaterialInventories(ctx contractapi.TransactionContextInterface) ([]*MaterialInventory, error) {
+	// Use GetStateByRange to query all material inventories
+	resultsIterator, err := ctx.GetStub().GetStateByRange("material_inventory_", "material_inventory_~")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query material inventories: %v", err)
+	}
+	defer resultsIterator.Close()
+
+	var inventories []*MaterialInventory
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		var inventory MaterialInventory
+		err = json.Unmarshal(queryResponse.Value, &inventory)
+		if err != nil {
+			return nil, err
+		}
+
+		inventories = append(inventories, &inventory)
+	}
+
+	return inventories, nil
+}
+
+// GetAllProducts returns all products from the blockchain
+func (s *SupplyChainContract) GetAllProducts(ctx contractapi.TransactionContextInterface) ([]*Product, error) {
+	// Query all products - we'll use a range query to get all product keys
+	// Products are stored with their productID as the key directly
+	resultsIterator, err := ctx.GetStub().GetStateByRange("", "")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query products: %v", err)
+	}
+	defer resultsIterator.Close()
+
+	var products []*Product
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+
+		// Skip if this is not a product (e.g., transfers or material inventories)
+		key := queryResponse.Key
+		if strings.HasPrefix(key, "transfer_") || strings.HasPrefix(key, "material_inventory_") {
+			continue
+		}
+
+		var product Product
+		err = json.Unmarshal(queryResponse.Value, &product)
+		if err != nil {
+			// Skip items that don't unmarshal as products
+			continue
+		}
+
+		// Verify it's actually a product by checking required fields
+		if product.ID != "" && product.Brand != "" {
+			products = append(products, &product)
+		}
 	}
 
 	return products, nil

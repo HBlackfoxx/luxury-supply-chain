@@ -596,10 +596,8 @@ export class ConsensusAPI extends EventEmitter {
       const pending = await req.consensusSystem!.getPendingTransactions(participantId);
       const disputes = pending.filter(tx => tx.state === 'DISPUTED');
       
-      res.json({
-        count: disputes.length,
-        disputes
-      });
+      // Return disputes array directly for frontend compatibility
+      res.json(disputes);
     } catch (error) {
       res.status(500).json({ 
         error: 'Failed to get open disputes',

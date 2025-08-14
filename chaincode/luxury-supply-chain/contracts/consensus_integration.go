@@ -146,10 +146,23 @@ func (ci *ConsensusIntegration) GetTrustScore(ctx contractapi.TransactionContext
 
 // InitiateTransferWithConsensus creates a transfer and submits to 2-Check consensus
 func (s *SupplyChainContract) InitiateTransferWithConsensus(ctx contractapi.TransactionContextInterface,
-	transferID string, productID string, to string, transferType TransferType) error {
+	transferID string, productID string, to string, transferTypeStr string) error {
 
-	// First create the transfer using the base method
-	err := s.InitiateTransfer(ctx, transferID, productID, to, transferType)
+	// Convert string to TransferType
+	var transferType TransferType
+	switch transferTypeStr {
+	case "SUPPLY_CHAIN":
+		transferType = TransferTypeSupplyChain
+	case "OWNERSHIP":
+		transferType = TransferTypeOwnership
+	case "RETURN":
+		transferType = TransferTypeReturn
+	default:
+		transferType = TransferTypeSupplyChain // Default to supply chain
+	}
+
+	// First create the transfer using the base method (convert back to string)
+	err := s.InitiateTransfer(ctx, transferID, productID, to, string(transferType))
 	if err != nil {
 		return err
 	}

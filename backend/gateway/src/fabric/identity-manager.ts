@@ -73,7 +73,7 @@ export class IdentityManager {
           return {
             certificate: fs.readFileSync(certPath, 'utf8'),
             privateKey: fs.readFileSync(keyPath, 'utf8'),
-            mspId: `${orgId.charAt(0).toUpperCase() + orgId.slice(1)}MSP`
+            mspId: this.configManager.getMspId(orgId)
           };
         }
       }

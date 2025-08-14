@@ -44,6 +44,30 @@ type Material struct {
 	ReceivedDate string `json:"receivedDate"`
 }
 
+// MaterialInventory tracks material ownership and usage per organization
+type MaterialInventory struct {
+	ID           string  `json:"id"`           // Unique ID: materialID_owner
+	MaterialID   string  `json:"materialId"`
+	Batch        string  `json:"batch"`        // Batch identifier
+	Owner        string  `json:"owner"`        // Current owner (organization)
+	Supplier     string  `json:"supplier"`     // Original supplier
+	Type         string  `json:"type"`         // Material type
+	TotalReceived float64 `json:"totalReceived"` // Total quantity received
+	Available    float64 `json:"available"`    // Currently available quantity
+	Used         float64 `json:"used"`         // Amount used in products
+	Transfers    []MaterialTransferRecord `json:"transfers"` // All transfers of this material
+}
+
+// MaterialTransferRecord tracks each transfer of a material
+type MaterialTransferRecord struct {
+	TransferID   string  `json:"transferId"`
+	From         string  `json:"from"`
+	To           string  `json:"to"`
+	Quantity     float64 `json:"quantity"`
+	TransferDate string  `json:"transferDate"`
+	Verified     bool    `json:"verified"` // 2-check consensus completed
+}
+
 // MaterialRecord is a simplified version for the birth certificate
 type MaterialRecord struct {
 	Type     string `json:"type"`

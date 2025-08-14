@@ -71,3 +71,5 @@ MISSING_FEATURES_B2B.md
 
 backup*
 chaincode/luxury-supply-chain/main.go.backup
+backend/uploads/*/*.json
+backend/uploads/*/*.png

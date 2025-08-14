@@ -21,16 +21,17 @@ import { Package, TrendingUp, History, Layers, BarChart3, AlertTriangle } from '
 
 export default function B2BDashboard() {
   const router = useRouter()
-  const { user, isAuthenticated } = useAuthStore()
+  const { user, isAuthenticated, hasHydrated } = useAuthStore()
   const [activeTab, setActiveTab] = useState('pending')
 
   const api = useApi()
 
   useEffect(() => {
-    if (!isAuthenticated || !user) {
+    // Only redirect after the auth store has hydrated from localStorage
+    if (hasHydrated && !isAuthenticated) {
       router.push('/login')
     }
-  }, [isAuthenticated, user, router])
+  }, [hasHydrated, isAuthenticated, router])
 
   // Fetch REAL stats from APIs
   const { data: statsData } = useQuery({
@@ -120,7 +121,29 @@ export default function B2BDashboard() {
     },
   ]
 
-  if (!user) return null
+  // Show loading while auth store is hydrating from localStorage
+  if (!hasHydrated) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-luxury-gold mx-auto"></div>
+          <p className="mt-4 text-gray-600">Loading...</p>
+        </div>
+      </div>
+    )
+  }
+
+  // If not authenticated after hydration, will redirect via useEffect
+  if (!isAuthenticated || !user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-luxury-gold mx-auto"></div>
+          <p className="mt-4 text-gray-600">Redirecting to login...</p>
+        </div>
+      </div>
+    )
+  }
 
   return (
     <>
