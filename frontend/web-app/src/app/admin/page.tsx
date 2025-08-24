@@ -4,8 +4,8 @@ import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { useQuery } from '@tanstack/react-query'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { CompensationManagement } from '@/components/admin/compensation-management'
-import { EmergencyStopControl } from '@/components/admin/emergency-stop-control'
+// import { CompensationManagement } from '@/components/admin/compensation-management' // Not in scope
+// import { EmergencyStopControl } from '@/components/admin/emergency-stop-control' // Not in scope
 import { UserManagement } from '@/components/admin/user-management'
 import { SystemMonitoring } from '@/components/admin/system-monitoring'
 import { AuditLogViewer } from '@/components/b2b/audit-log-viewer'
@@ -137,10 +137,10 @@ export default function AdminDashboard() {
 
         {/* Main Content Tabs */}
         <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="monitoring">System Monitoring</TabsTrigger>
-            <TabsTrigger value="emergency">Emergency Control</TabsTrigger>
-            <TabsTrigger value="compensation">Compensations</TabsTrigger>
+            {/* <TabsTrigger value="emergency">Emergency Control</TabsTrigger> Not in scope */}
+            {/* <TabsTrigger value="compensation">Compensations</TabsTrigger> Not in scope */}
             <TabsTrigger value="users">User Management</TabsTrigger>
             <TabsTrigger value="audit">Audit Logs</TabsTrigger>
           </TabsList>
@@ -149,13 +149,13 @@ export default function AdminDashboard() {
             <SystemMonitoring />
           </TabsContent>
 
-          <TabsContent value="emergency" className="space-y-4">
+          {/* <TabsContent value="emergency" className="space-y-4">
             <EmergencyStopControl />
-          </TabsContent>
+          </TabsContent> Not in scope */}
 
-          <TabsContent value="compensation" className="space-y-4">
+          {/* <TabsContent value="compensation" className="space-y-4">
             <CompensationManagement />
-          </TabsContent>
+          </TabsContent> Not in scope */}
 
           <TabsContent value="users" className="space-y-4">
             <UserManagement />

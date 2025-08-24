@@ -166,7 +166,28 @@ services:
       - fabric-network
       - postgres
 
-  # Unified Frontend
+  # Customer Gateway (for C2C operations)
+  customer-gateway:
+    build: ./backend
+    container_name: customer-gateway
+    ports:
+      - "3010:3010"
+    environment:
+      - NODE_ENV=production
+      - CUSTOMER_GATEWAY_PORT=3010
+      - RETAILER_BACKEND_URL=http://luxuryretail-backend:4000
+      - SERVICE_ACCOUNT_USERNAME=store@luxuryretail.com
+      - SERVICE_ACCOUNT_PASSWORD=LuxuryRetail2024!
+    command: ["sh", "-c", "cd customer-gateway && npm install && npm run build && npm start"]
+    volumes:
+      - ./backend:/app
+    working_dir: /app
+    networks:
+      - luxury-network
+    depends_on:
+      - luxuryretail-backend
+
+  # B2B Frontend
   frontend:
     build: ./frontend/web-app
     container_name: luxury-frontend
@@ -178,12 +199,30 @@ services:
       - NEXT_PUBLIC_ITALIANLEATHER_API=http://localhost:4002
       - NEXT_PUBLIC_CRAFTWORKSHOP_API=http://localhost:4003
       - NEXT_PUBLIC_LUXURYRETAIL_API=http://localhost:4004
+      - NEXT_PUBLIC_CUSTOMER_GATEWAY_API=http://localhost:3010
     networks:
       - luxury-network
     depends_on:
       - luxebags-backend
       - italianleather-backend
       - craftworkshop-backend
+      - luxuryretail-backend
+      - customer-gateway
+
+  # Customer Frontend
+  customer-frontend:
+    build: ./frontend/customer-app
+    container_name: luxury-customer-frontend
+    ports:
+      - "3001:3001"
+    environment:
+      - NODE_ENV=production
+      - NEXT_PUBLIC_CUSTOMER_GATEWAY_URL=http://localhost:3010
+      - NEXT_PUBLIC_RETAILER_API_URL=http://localhost:4004
+    networks:
+      - luxury-network
+    depends_on:
+      - customer-gateway
       - luxuryretail-backend
 
   # Placeholder for fabric network (already running)

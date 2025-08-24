@@ -57,13 +57,13 @@ export function BatchOperations() {
           
           switch (item.action) {
             case 'confirm-sent':
-              result = await api.post(`/api/consensus/transactions/${item.transactionId}/confirm-sent`, {
+              result = await api.post(`/api/supply-chain/transfer/${item.transactionId}/confirm-sent`, {
                 evidence: item.data
               })
               break
               
             case 'confirm-received':
-              result = await api.post(`/api/consensus/transactions/${item.transactionId}/confirm-received`, {
+              result = await api.post(`/api/supply-chain/transfer/${item.transactionId}/confirm-received`, {
                 evidence: item.data
               })
               break

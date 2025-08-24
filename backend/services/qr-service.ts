@@ -62,8 +62,9 @@ export class QRService {
         qrOptions
       );
 
-      // Store QR code image
-      const filename = `${productId}-${Date.now()}.png`;
+      // Store QR code image with just productId as filename
+      // This makes it easier to retrieve by product ID
+      const filename = `${productId}.png`;
       const storedPath = await storageService.storeBase64Image(
         dataUrl,
         filename,

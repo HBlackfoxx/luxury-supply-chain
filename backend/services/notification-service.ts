@@ -1,7 +1,6 @@
 // backend/services/notification-service.ts
 // Notification service for sending alerts and updates
 
-import { EventEmitter } from 'events';
 import { Pool } from 'pg';
 
 export interface NotificationConfig {
@@ -23,7 +22,7 @@ export interface Notification {
   timestamp: Date;
 }
 
-export class NotificationService extends EventEmitter {
+export class NotificationService {
   private config: NotificationConfig;
   private notificationQueue: Notification[] = [];
   private pool: Pool | null = null;
@@ -33,7 +32,6 @@ export class NotificationService extends EventEmitter {
     smsEnabled: false,
     webhookEnabled: true
   }) {
-    super();
     this.config = config;
     this.initializeDatabase();
     this.startQueueProcessor();
@@ -72,9 +70,9 @@ export class NotificationService extends EventEmitter {
     // Add to queue
     this.notificationQueue.push(notification);
     
-    // Emit for immediate processing if high priority
+    // Log for immediate processing if high priority
     if (notification.priority === 'high' || notification.priority === 'urgent') {
-      this.emit('notification:urgent', notification);
+      console.log('High priority notification:', notification.type, notification.recipients);
     }
   }
 
@@ -187,7 +185,7 @@ export class NotificationService extends EventEmitter {
 
     // In-app notification (always enabled)
     if (notification.channels.includes('in_app')) {
-      this.emit('in_app_notification', notification);
+      console.log('In-app notification sent:', notification.type, notification.recipients);
     }
 
     await Promise.all(promises);
@@ -235,7 +233,7 @@ export class NotificationService extends EventEmitter {
     console.log(`Message: ${notification.message}`);
     
     // Store in database for email service to pick up
-    this.emit('notification:email_queued', {
+    console.log('Email queued:', {
       to: notification.recipients,
       subject: notification.subject,
       body: notification.message,
@@ -251,7 +249,7 @@ export class NotificationService extends EventEmitter {
     console.log(`SMS: To: ${notification.recipients.join(', ')}`);
     console.log(`Message: ${notification.message.substring(0, 160)}`); // SMS limit
     
-    this.emit('notification:sms_queued', {
+    console.log('SMS queued:', {
       to: notification.recipients,
       message: notification.message.substring(0, 160)
     });

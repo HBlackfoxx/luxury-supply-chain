@@ -25,48 +25,37 @@ export function TrustScoreDashboard() {
       if (!user?.organization || !api) return []
       
       try {
-        // Get transaction history to calculate trust scores
-        const { data } = await api.get(`/api/consensus/transactions/history/${user.organization}`)
+        // Get trust scores for each partner organization from backend
+        const organizations = ['luxebags', 'italianleather', 'craftworkshop', 'luxuryretail']
+        const partnerOrgs = organizations.filter(org => org !== user.organization)
         
-        // Calculate partner trust scores from transaction history
-        const partnerMap: { [key: string]: TrustScore } = {}
-        
-        data.forEach((tx: any) => {
-          const partner = tx.sender === user.organization ? tx.receiver : tx.sender
-          if (partner === user.organization) return // Skip self
-          
-          if (!partnerMap[partner]) {
-            partnerMap[partner] = {
+        const trustPromises = partnerOrgs.map(async (partner) => {
+          try {
+            const { data } = await api.get(`/api/supply-chain/trust/${partner}`)
+            return {
               partnerId: partner,
               partnerName: partner.charAt(0).toUpperCase() + partner.slice(1),
-              score: 85, // Base score
+              score: data.score || 85,
+              trend: data.trend || 'stable' as const,
+              transactions: data.totalTransactions || 0,
+              disputes: data.disputedTx || 0,
+              lastInteraction: new Date().toISOString()
+            }
+          } catch (error) {
+            // Return default if not found
+            return {
+              partnerId: partner,
+              partnerName: partner.charAt(0).toUpperCase() + partner.slice(1),
+              score: 85,
               trend: 'stable' as const,
               transactions: 0,
               disputes: 0,
-              lastInteraction: tx.updatedAt || tx.createdAt
+              lastInteraction: new Date().toISOString()
             }
-          }
-          
-          partnerMap[partner].transactions++
-          
-          // Adjust score based on transaction outcome
-          if (tx.state === 'VALIDATED') {
-            partnerMap[partner].score = Math.min(100, partnerMap[partner].score + 1)
-            partnerMap[partner].trend = 'up'
-          } else if (tx.state === 'DISPUTED') {
-            partnerMap[partner].disputes++
-            partnerMap[partner].score = Math.max(0, partnerMap[partner].score - 5)
-            partnerMap[partner].trend = 'down'
-          }
-          
-          // Update last interaction
-          const txDate = tx.updatedAt || tx.createdAt
-          if (new Date(txDate) > new Date(partnerMap[partner].lastInteraction)) {
-            partnerMap[partner].lastInteraction = txDate
           }
         })
         
-        return Object.values(partnerMap)
+        return await Promise.all(trustPromises)
       } catch (error) {
         console.error('Failed to fetch trust scores:', error)
         return []

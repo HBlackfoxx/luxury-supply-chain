@@ -5,6 +5,9 @@ RUN apk add --no-cache git gcc musl-dev
 
 WORKDIR /app
 
+# Force rebuild
+ENV REBUILD_TIME=1755369889
+
 # Copy go mod files
 COPY go.mod go.sum ./
 RUN go mod download

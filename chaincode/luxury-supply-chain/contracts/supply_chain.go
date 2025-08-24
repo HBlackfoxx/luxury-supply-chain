@@ -1,6 +1,8 @@
 package contracts
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strconv"
@@ -15,173 +17,312 @@ type SupplyChainContract struct {
 	contractapi.Contract
 }
 
-// InitLedger initializes the ledger with sample data (for testing)
+// InitLedger initializes the ledger with organization roles
 func (s *SupplyChainContract) InitLedger(ctx contractapi.TransactionContextInterface) error {
-	// This is optional, for demo purposes
+	// Initialize roles through RoleManagementContract
+	roleContract := &RoleManagementContract{}
+	err := roleContract.InitializeRoles(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to initialize roles: %v", err)
+	}
+	
 	return nil
 }
 
-// CreateProduct creates a new luxury product in the supply chain
-func (s *SupplyChainContract) CreateProduct(ctx contractapi.TransactionContextInterface,
-	id string, brand string, name string, productType string, serialNumber string) error {
-
-	// Check if product already exists
-	exists, err := s.ProductExists(ctx, id)
+// CreateBatch creates a batch of products using materials
+func (s *SupplyChainContract) CreateBatch(ctx contractapi.TransactionContextInterface,
+	batchID string, brand string, productType string, quantity int, materialsJSON string) error {
+	
+	// Check if batch already exists
+	existing, err := ctx.GetStub().GetState("batch_" + batchID)
 	if err != nil {
 		return err
 	}
-	if exists {
-		return fmt.Errorf("product %s already exists", id)
+	if existing != nil {
+		return fmt.Errorf("batch %s already exists", batchID)
 	}
-
-	// Get creator's MSP ID
-	creator, err := ctx.GetClientIdentity().GetMSPID()
-	if err != nil {
-		return fmt.Errorf("failed to get creator identity: %v", err)
-	}
-
-	product := Product{
-		ID:              id,
-		Brand:           brand,
-		Name:            name,
-		Type:            productType,
-		SerialNumber:    serialNumber,
-		CreatedAt:       time.Now().Format(time.RFC3339),
-		CurrentOwner:    creator,
-		CurrentLocation: creator,
-		Status:          ProductStatusCreated,
-		Materials:       []Material{},
-		QualityCheckpoints: []QualityCheckpoint{},
-		Metadata:        make(map[string]interface{}),
-	}
-
-	productJSON, err := json.Marshal(product)
-	if err != nil {
-		return err
-	}
-
-	return ctx.GetStub().PutState(id, productJSON)
-}
-
-// AddMaterial adds material information to a product WITH VALIDATION
-func (s *SupplyChainContract) AddMaterial(ctx contractapi.TransactionContextInterface,
-	productID string, materialID string, materialType string, source string, 
-	supplier string, batch string, verification string) error {
-
-	product, err := s.GetProduct(ctx, productID)
-	if err != nil {
-		return err
-	}
-
-	// Only allow material addition in created or in-production status
-	if product.Status != ProductStatusCreated && product.Status != ProductStatusInProduction {
-		return fmt.Errorf("cannot add materials to product in status: %s", product.Status)
-	}
-
+	
 	// Get manufacturer identity
 	manufacturer, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
 		return fmt.Errorf("failed to get manufacturer identity: %v", err)
 	}
-
-	// Verify manufacturer owns the product
-	if product.CurrentOwner != manufacturer {
-		return fmt.Errorf("only the product owner can add materials")
+	
+	// CHECK PERMISSION - Only manufacturers can create batches
+	roleContract := &RoleManagementContract{}
+	hasPermission, err := roleContract.CheckPermission(ctx, manufacturer, "CREATE_BATCH")
+	if err != nil || !hasPermission {
+		return fmt.Errorf("caller %s does not have permission to create batches", manufacturer)
 	}
-
-	// CRITICAL: Verify material inventory exists and is owned by manufacturer
-	inventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, manufacturer)
-	inventoryJSON, err := ctx.GetStub().GetState(inventoryKey)
-	if err != nil {
-		return fmt.Errorf("failed to read material inventory: %v", err)
+	
+	// MaterialInput represents input format for materials with quantities
+	type MaterialInput struct {
+		ID       string  `json:"id"`
+		Quantity float64 `json:"quantity"`
 	}
-	if inventoryJSON == nil {
-		return fmt.Errorf("material %s not found in %s's inventory - material must be properly transferred first", materialID, manufacturer)
+	
+	// Parse materials with quantities
+	var materials []MaterialInput
+	if materialsJSON != "" {
+		err = json.Unmarshal([]byte(materialsJSON), &materials)
+		if err != nil {
+			return fmt.Errorf("invalid materials format: %v", err)
+		}
 	}
-
-	var inventory MaterialInventory
-	err = json.Unmarshal(inventoryJSON, &inventory)
+	
+	// Track material usage (initialize to empty array to avoid null)
+	materialsUsed := []MaterialUsage{}
+	for _, mat := range materials {
+		// Get material inventory
+		inventoryKey := fmt.Sprintf("material_inventory_%s_%s", mat.ID, manufacturer)
+		inventoryJSON, err := ctx.GetStub().GetState(inventoryKey)
+		if err != nil {
+			return err
+		}
+		if inventoryJSON == nil {
+			return fmt.Errorf("material %s not in manufacturer's inventory", mat.ID)
+		}
+		
+		var inventory MaterialInventory
+		err = json.Unmarshal(inventoryJSON, &inventory)
+		if err != nil {
+			return err
+		}
+		
+		// Use the specified quantity per batch
+		totalUsage := mat.Quantity
+		
+		if inventory.Available < totalUsage {
+			return fmt.Errorf("insufficient material %s: need %.2f, have %.2f", mat.ID, totalUsage, inventory.Available)
+		}
+		
+		// Deduct from inventory
+		inventory.Available -= totalUsage
+		inventory.Used += totalUsage
+		
+		// Update inventory
+		updatedInventoryJSON, err := json.Marshal(inventory)
+		if err != nil {
+			return err
+		}
+		err = ctx.GetStub().PutState(inventoryKey, updatedInventoryJSON)
+		if err != nil {
+			return err
+		}
+		
+		// Track usage
+		materialsUsed = append(materialsUsed, MaterialUsage{
+			MaterialID:   mat.ID,
+			MaterialType: inventory.Type,
+			Supplier:     inventory.Supplier,
+			QuantityUsed: totalUsage,
+			Batch:        inventory.Batch,
+		})
+	}
+	
+	// Generate product IDs for the batch
+	var productIDs []string
+	for i := 1; i <= quantity; i++ {
+		productID := fmt.Sprintf("%s-P%04d", batchID, i)
+		productIDs = append(productIDs, productID)
+		
+		// Create individual product
+		product := Product{
+			ID:               productID,
+			BatchID:          batchID,
+			Brand:            brand,
+			Name:             fmt.Sprintf("%s #%d", productType, i),
+			Type:             productType,
+			SerialNumber:     fmt.Sprintf("%s-%04d", batchID, i),
+			UniqueIdentifier: fmt.Sprintf("%04d", i),
+			CreatedAt:        time.Now().Format(time.RFC3339),
+			CurrentOwner:     manufacturer,
+			CurrentLocation:  manufacturer,
+			Status:           ProductStatusCreated,
+			IsStolen:         false,
+			StolenDate:       "N/A",
+			RecoveredDate:    "N/A",
+			Materials:        []Material{},
+			Metadata:         make(map[string]interface{}),
+		}
+		
+		// Add materials info to product
+		for _, matUsage := range materialsUsed {
+			product.Materials = append(product.Materials, Material{
+				ID:           matUsage.MaterialID,
+				Type:         matUsage.MaterialType,
+				Supplier:     matUsage.Supplier,
+				Batch:        matUsage.Batch,
+				QuantityUsed: matUsage.QuantityUsed / float64(quantity), // Per product
+				Verification: "batch_verified",
+				ReceivedDate: time.Now().Format(time.RFC3339),
+			})
+		}
+		
+		productJSON, err := json.Marshal(product)
+		if err != nil {
+			return err
+		}
+		err = ctx.GetStub().PutState(productID, productJSON)
+		if err != nil {
+			return err
+		}
+		
+		// Create birth certificate for each product
+		// Create material records from product materials
+		// Initialize as empty slice to ensure it's never nil
+		materialRecords := []MaterialRecord{}
+		for _, material := range product.Materials {
+			record := MaterialRecord{
+				Type:     material.Type,
+				Source:   material.Source,
+				Supplier: material.Supplier,
+				Batch:    material.Batch,
+			}
+			materialRecords = append(materialRecords, record)
+		}
+		
+		// Create certificate
+		certificate := DigitalBirthCertificate{
+			ProductID:          productID,
+			Brand:              product.Brand,
+			ManufacturingDate:  product.CreatedAt,
+			ManufacturingPlace: manufacturer,
+			Craftsman:          fmt.Sprintf("%s Production Team", manufacturer),
+			Materials:          materialRecords,
+			Authenticity:       AuthenticityDetails{
+				NFCChipID:        fmt.Sprintf("NFC-%s", product.SerialNumber),
+				QRCodeData:       fmt.Sprintf("QR-%s", productID),
+				HologramID:       fmt.Sprintf("HOLO-%s", product.SerialNumber),
+				SecurityFeatures: []string{"Anti-counterfeit tag", "Hologram", "NFC chip"},
+			},
+			InitialPhotos:      []string{},
+		}
+		
+		// Calculate certificate hash
+		certData, _ := json.Marshal(certificate)
+		hash := sha256.Sum256(certData)
+		certificate.CertificateHash = hex.EncodeToString(hash[:])
+		
+		// Store certificate
+		certKey := "cert_" + productID
+		certJSON, err := json.Marshal(certificate)
+		if err != nil {
+			return err
+		}
+		
+		err = ctx.GetStub().PutState(certKey, certJSON)
+		if err != nil {
+			return err
+		}
+	}
+	
+	// Create batch record
+	batch := ProductBatch{
+		ID:              batchID,
+		Manufacturer:    manufacturer,
+		Brand:           brand,
+		ProductType:     productType,
+		Quantity:        quantity,
+		ProductIDs:      productIDs,
+		MaterialsUsed:   materialsUsed,
+		ManufactureDate: time.Now().Format(time.RFC3339),
+		QRCode:          fmt.Sprintf("QR-%s-%d", batchID, time.Now().Unix()),
+		CurrentOwner:    manufacturer,
+		CurrentLocation: manufacturer,
+		Status:          BatchStatusCreated,
+		Metadata:        make(map[string]string),
+	}
+	
+	batchJSON, err := json.Marshal(batch)
 	if err != nil {
 		return err
 	}
-
-	// Check if material is available
-	if inventory.Available <= 0 {
-		return fmt.Errorf("insufficient material %s in inventory: available=%.2f", materialID, inventory.Available)
-	}
-
-	// Deduct from inventory (assuming 1 unit used, could be parameterized)
-	usageAmount := 1.0
-	if inventory.Available < usageAmount {
-		return fmt.Errorf("insufficient material %s: need %.2f, have %.2f", materialID, usageAmount, inventory.Available)
-	}
-
-	inventory.Available -= usageAmount
-	inventory.Used += usageAmount
-
-	// Update inventory
-	updatedInventoryJSON, err := json.Marshal(inventory)
-	if err != nil {
-		return err
-	}
-	err = ctx.GetStub().PutState(inventoryKey, updatedInventoryJSON)
-	if err != nil {
-		return err
-	}
-
-	// Add material to product with verified supplier
-	material := Material{
-		ID:           materialID,
-		Type:         materialType,
-		Source:       source,
-		Supplier:     inventory.Supplier, // Use verified supplier from inventory
-		Batch:        batch,
-		Verification: "verified_from_inventory",
-		ReceivedDate: time.Now().Format(time.RFC3339),
-	}
-
-	product.Materials = append(product.Materials, material)
-
-	productJSON, err := json.Marshal(product)
-	if err != nil {
-		return err
-	}
-
-	return ctx.GetStub().PutState(productID, productJSON)
+	
+	return ctx.GetStub().PutState("batch_"+batchID, batchJSON)
 }
 
-// AddQualityCheckpoint records quality verification
-func (s *SupplyChainContract) AddQualityCheckpoint(ctx contractapi.TransactionContextInterface,
-	productID string, checkpointID string, stage string, passed bool, details string) error {
+// Note: AddMaterial removed - materials are only added during batch creation
+// Products receive their materials when created as part of a batch
 
-	product, err := s.GetProduct(ctx, productID)
+// REMOVED: AddQualityCheckpoint - Quality checks are not part of the flow
+// Quality is assumed to be verified through the 2-check consensus process
+// when parties confirm sending/receiving
+
+// TransferBatch transfers an entire batch between organizations
+func (s *SupplyChainContract) TransferBatch(ctx contractapi.TransactionContextInterface,
+	transferID string, batchID string, to string) error {
+	
+	// Get batch
+	batchJSON, err := ctx.GetStub().GetState("batch_" + batchID)
 	if err != nil {
 		return err
 	}
-
-	// Get inspector identity
-	inspector, err := ctx.GetClientIdentity().GetMSPID()
-	if err != nil {
-		return fmt.Errorf("failed to get inspector identity: %v", err)
+	if batchJSON == nil {
+		return fmt.Errorf("batch %s does not exist", batchID)
 	}
-
-	checkpoint := QualityCheckpoint{
-		ID:        checkpointID,
-		Stage:     stage,
-		Inspector: inspector,
-		Date:      time.Now().Format(time.RFC3339),
-		Passed:    passed,
-		Details:   details,
-	}
-
-	product.QualityCheckpoints = append(product.QualityCheckpoints, checkpoint)
-
-	productJSON, err := json.Marshal(product)
+	
+	var batch ProductBatch
+	err = json.Unmarshal(batchJSON, &batch)
 	if err != nil {
 		return err
 	}
-
-	return ctx.GetStub().PutState(productID, productJSON)
+	
+	// Get sender identity
+	sender, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return err
+	}
+	
+	// Verify sender owns the batch
+	if batch.CurrentOwner != sender {
+		return fmt.Errorf("sender does not own the batch")
+	}
+	
+	// Create transfer record
+	transfer := Transfer{
+		ID:           transferID,
+		ProductID:    batchID, // Using batch ID as product ID
+		From:         sender,
+		To:           to,
+		TransferType: TransferTypeSupplyChain,
+		InitiatedAt:  time.Now().Format(time.RFC3339),
+		CompletedAt:  "PENDING",
+		Status:       TransferStatusInitiated,
+		ConsensusDetails: ConsensusInfo{
+			SenderConfirmed:   false,
+			ReceiverConfirmed: false,
+			SenderTimestamp:   "PENDING",
+			ReceiverTimestamp: "PENDING",
+			TimeoutAt:         time.Now().Add(24 * time.Hour).Format(time.RFC3339),
+		},
+	}
+	
+	// Store metadata about batch transfer
+	if transfer.Metadata == nil {
+		transfer.Metadata = make(map[string]interface{})
+	}
+	transfer.Metadata["type"] = "BATCH"
+	transfer.Metadata["quantity"] = batch.Quantity
+	transfer.Metadata["productType"] = batch.ProductType
+	
+	transferJSON, err := json.Marshal(transfer)
+	if err != nil {
+		return err
+	}
+	
+	err = ctx.GetStub().PutState("transfer_"+transferID, transferJSON)
+	if err != nil {
+		return err
+	}
+	
+	// Emit event
+	err = ctx.GetStub().SetEvent("BatchTransferInitiated", transferJSON)
+	if err != nil {
+		return err
+	}
+	
+	return nil
 }
 
 // InitiateTransfer starts a B2B transfer with 2-Check consensus
@@ -232,10 +373,13 @@ func (s *SupplyChainContract) InitiateTransfer(ctx contractapi.TransactionContex
 		To:           to,
 		TransferType: transferType,
 		InitiatedAt:  time.Now().Format(time.RFC3339),
+		CompletedAt:  "PENDING",
 		Status:       TransferStatusInitiated,
 		ConsensusDetails: ConsensusInfo{
 			SenderConfirmed: false,
 			ReceiverConfirmed: false,
+			SenderTimestamp:   "PENDING",
+			ReceiverTimestamp: "PENDING",
 			TimeoutAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339), // 24 hour timeout
 		},
 	}
@@ -337,30 +481,138 @@ func (s *SupplyChainContract) ConfirmReceived(ctx contractapi.TransactionContext
 	transfer.Status = TransferStatusCompleted
 	transfer.CompletedAt = now
 
-	// Update product ownership
-	product, err := s.GetProduct(ctx, transfer.ProductID)
+	// Get receiver's role using RoleManagementContract
+	roleContract := &RoleManagementContract{}
+	receiverRole, err := roleContract.GetOrganizationRole(ctx, receiver)
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to get receiver role: %v", err)
 	}
 
-	product.CurrentOwner = transfer.To
-	product.CurrentLocation = transfer.To
+	// Check if this is a batch transfer
+	if transfer.Metadata != nil {
+		if batchType, ok := transfer.Metadata["type"].(string); ok && batchType == "BATCH" {
+			// Handle batch transfer
+			batch, err := s.GetBatch(ctx, transfer.ProductID) // ProductID is actually batchID for batch transfers
+			if err != nil {
+				return fmt.Errorf("failed to get batch: %v", err)
+			}
+			
+			// Update batch ownership and location
+			batch.CurrentOwner = transfer.To
+			batch.CurrentLocation = transfer.To
+			
+			// Update batch status based on receiver's role
+			switch receiverRole {
+			case RoleRetailer:
+				batch.Status = BatchStatusAtRetailer
+			case RoleWarehouse:
+				batch.Status = BatchStatusAtWarehouse
+			case RoleManufacturer:
+				batch.Status = BatchStatusCreated
+			default:
+				batch.Status = BatchStatusInTransit
+			}
+			
+			// Save batch
+			batchJSON, err := json.Marshal(batch)
+			if err != nil {
+				return err
+			}
+			err = ctx.GetStub().PutState("batch_"+batch.ID, batchJSON)
+			if err != nil {
+				return err
+			}
+			
+			// Update all products in batch
+			for _, productID := range batch.ProductIDs {
+				product, err := s.GetProduct(ctx, productID)
+				if err != nil {
+					continue // Skip if product not found
+				}
+				product.CurrentOwner = transfer.To
+				product.CurrentLocation = transfer.To
+				
+				// Update product status based on receiver's role
+				switch receiverRole {
+				case RoleRetailer:
+					product.Status = ProductStatusInStore
+				case RoleWarehouse:
+					product.Status = ProductStatusInTransit
+				case RoleManufacturer:
+					product.Status = ProductStatusInProduction
+				default:
+					product.Status = ProductStatusInTransit
+				}
+				
+				productJSON, err := json.Marshal(product)
+				if err != nil {
+					continue
+				}
+				ctx.GetStub().PutState(productID, productJSON)
+			}
+		} else {
+			// Handle single product transfer
+			product, err := s.GetProduct(ctx, transfer.ProductID)
+			if err != nil {
+				return err
+			}
 
-	// Update product status based on transfer type
-	if transfer.To == product.Brand {
-		product.Status = ProductStatusInStore
+			product.CurrentOwner = transfer.To
+			product.CurrentLocation = transfer.To
+
+			// Update product status based on receiver's role
+			switch receiverRole {
+			case RoleRetailer:
+				product.Status = ProductStatusInStore
+			case RoleWarehouse:
+				product.Status = ProductStatusInTransit
+			case RoleManufacturer:
+				product.Status = ProductStatusInProduction
+			default:
+				product.Status = ProductStatusInTransit
+			}
+
+			// Save product
+			productJSON, err := json.Marshal(product)
+			if err != nil {
+				return err
+			}
+			err = ctx.GetStub().PutState(product.ID, productJSON)
+			if err != nil {
+				return err
+			}
+		}
 	} else {
-		product.Status = ProductStatusInTransit
-	}
+		// Legacy single product transfer (no metadata)
+		product, err := s.GetProduct(ctx, transfer.ProductID)
+		if err != nil {
+			return err
+		}
 
-	// Save product
-	productJSON, err := json.Marshal(product)
-	if err != nil {
-		return err
-	}
-	err = ctx.GetStub().PutState(product.ID, productJSON)
-	if err != nil {
-		return err
+		product.CurrentOwner = transfer.To
+		product.CurrentLocation = transfer.To
+
+		// Update product status based on receiver's role
+		switch receiverRole {
+		case RoleRetailer:
+			product.Status = ProductStatusInStore
+		case RoleWarehouse:
+			product.Status = ProductStatusInTransit
+		case RoleManufacturer:
+			product.Status = ProductStatusInProduction
+		default:
+			product.Status = ProductStatusInTransit
+		}
+
+		// Save product
+		productJSON, err := json.Marshal(product)
+		if err != nil {
+			return err
+		}
+		err = ctx.GetStub().PutState(product.ID, productJSON)
+		if err != nil {
+			return err
+		}
 	}
 
 	// Save transfer
@@ -398,6 +650,11 @@ func (s *SupplyChainContract) GetProduct(ctx contractapi.TransactionContextInter
 	err = json.Unmarshal(productJSON, &product)
 	if err != nil {
 		return nil, err
+	}
+
+	// Ensure Materials is never nil (empty array instead)
+	if product.Materials == nil {
+		product.Materials = []Material{}
 	}
 
 	return &product, nil
@@ -465,6 +722,10 @@ func (s *SupplyChainContract) GetProductHistory(ctx contractapi.TransactionConte
 			if err != nil {
 				return nil, err
 			}
+			// Ensure Materials is never nil
+			if product.Materials == nil {
+				product.Materials = []Material{}
+			}
 			record["value"] = product
 		}
 
@@ -512,6 +773,10 @@ func (s *SupplyChainContract) queryProducts(ctx contractapi.TransactionContextIn
 		if err != nil {
 			return nil, err
 		}
+		// Ensure Materials is never nil
+		if product.Materials == nil {
+			product.Materials = []Material{}
+		}
 		products = append(products, &product)
 	}
 
@@ -534,6 +799,13 @@ func (s *SupplyChainContract) CreateMaterialInventory(ctx contractapi.Transactio
 	supplier, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
 		return fmt.Errorf("failed to get supplier identity: %v", err)
+	}
+	
+	// CHECK PERMISSION - Only suppliers can create material inventory
+	roleContract := &RoleManagementContract{}
+	hasPermission, err := roleContract.CheckPermission(ctx, supplier, "CREATE_MATERIAL")
+	if err != nil || !hasPermission {
+		return fmt.Errorf("caller %s does not have permission to create material inventory", supplier)
 	}
 
 	// Check if inventory already exists
@@ -568,7 +840,7 @@ func (s *SupplyChainContract) CreateMaterialInventory(ctx contractapi.Transactio
 	return ctx.GetStub().PutState(inventoryKey, inventoryJSON)
 }
 
-// TransferMaterialInventory transfers material from one organization to another
+// TransferMaterialInventory transfers material from one organization to another with consensus
 func (s *SupplyChainContract) TransferMaterialInventory(ctx contractapi.TransactionContextInterface,
 	transferID string, materialID string, toOrganization string, quantityStr string) error {
 	
@@ -582,6 +854,19 @@ func (s *SupplyChainContract) TransferMaterialInventory(ctx contractapi.Transact
 	fromOrganization, err := ctx.GetClientIdentity().GetMSPID()
 	if err != nil {
 		return fmt.Errorf("failed to get sender identity: %v", err)
+	}
+	
+	// CHECK PERMISSION - Only suppliers and manufacturers can transfer materials
+	roleContract := &RoleManagementContract{}
+	hasPermission, err := roleContract.CheckPermission(ctx, fromOrganization, "TRANSFER_MATERIAL")
+	if err != nil || !hasPermission {
+		return fmt.Errorf("caller %s does not have permission to transfer materials", fromOrganization)
+	}
+	
+	// Submit to consensus first
+	err = s.SubmitMaterialTransferToConsensus(ctx, transferID, materialID, fromOrganization, toOrganization, quantity)
+	if err != nil {
+		return fmt.Errorf("failed to submit material transfer to consensus: %v", err)
 	}
 
 	// Get sender's inventory
@@ -614,6 +899,7 @@ func (s *SupplyChainContract) TransferMaterialInventory(ctx contractapi.Transact
 		Quantity:     quantity,
 		TransferDate: time.Now().Format(time.RFC3339),
 		Verified:     false, // Will be set to true after 2-check consensus
+		Status:       "PENDING", // Default status for new transfers
 	}
 	senderInventory.Transfers = append(senderInventory.Transfers, transferRecord)
 
@@ -665,10 +951,26 @@ func (s *SupplyChainContract) TransferMaterialInventory(ctx contractapi.Transact
 		return err
 	}
 
-	return ctx.GetStub().PutState(receiverInventoryKey, updatedReceiverJSON)
+	err = ctx.GetStub().PutState(receiverInventoryKey, updatedReceiverJSON)
+	if err != nil {
+		return err
+	}
+	
+	// Emit event for consensus tracking
+	eventData := map[string]interface{}{
+		"transferID": transferID,
+		"materialID": materialID,
+		"from":       fromOrganization,
+		"to":         toOrganization,
+		"quantity":   quantity,
+	}
+	eventJSON, _ := json.Marshal(eventData)
+	ctx.GetStub().SetEvent("MaterialTransferInitiated", eventJSON)
+	
+	return nil
 }
 
-// ConfirmMaterialReceived confirms material receipt and updates inventory
+// ConfirmMaterialReceived confirms material receipt and updates inventory with consensus
 func (s *SupplyChainContract) ConfirmMaterialReceived(ctx contractapi.TransactionContextInterface,
 	transferID string, materialID string) error {
 
@@ -703,6 +1005,7 @@ func (s *SupplyChainContract) ConfirmMaterialReceived(ctx contractapi.Transactio
 				return fmt.Errorf("transfer %s already confirmed", transferID)
 			}
 			inventory.Transfers[i].Verified = true
+			inventory.Transfers[i].Status = "COMPLETED" // Update status when verified
 			transferQuantity = transfer.Quantity
 			transferFound = true
 			break
@@ -756,6 +1059,7 @@ func (s *SupplyChainContract) ConfirmMaterialReceived(ctx contractapi.Transactio
 		for i, transfer := range senderInventory.Transfers {
 			if transfer.TransferID == transferID {
 				senderInventory.Transfers[i].Verified = true
+				senderInventory.Transfers[i].Status = "COMPLETED" // Update status when verified
 				break
 			}
 		}
@@ -771,6 +1075,136 @@ func (s *SupplyChainContract) ConfirmMaterialReceived(ctx contractapi.Transactio
 			return err
 		}
 	}
+	
+	// Notify consensus of receipt confirmation
+	consensus := NewConsensusIntegration("2check-consensus", "luxury-supply-chain")
+	err = consensus.NotifyConsensusOfReceived(ctx, transferID, receiver)
+	if err != nil {
+		// Log but don't fail - material transfer is already complete
+		fmt.Printf("Warning: Failed to notify consensus of material receipt: %v\n", err)
+	}
+	
+	// Emit event
+	eventData := map[string]interface{}{
+		"transferID": transferID,
+		"materialID": materialID,
+		"receiver":   receiver,
+		"quantity":   transferQuantity,
+	}
+	eventJSON, _ := json.Marshal(eventData)
+	ctx.GetStub().SetEvent("MaterialReceiptConfirmed", eventJSON)
+
+	return nil
+}
+
+// ConfirmReturnTransferReceived confirms receipt of a return transfer from dispute resolution
+// This handles the case where inventory might not exist (e.g., supplier receiving returns)
+func (s *SupplyChainContract) ConfirmReturnTransferReceived(ctx contractapi.TransactionContextInterface,
+	transferID string, materialID string) error {
+
+	// Get receiver identity
+	receiver, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get receiver identity: %v", err)
+	}
+
+	// For return transfers, create inventory if it doesn't exist
+	inventoryKey := fmt.Sprintf("material_inventory_%s_%s", materialID, receiver)
+	inventoryJSON, err := ctx.GetStub().GetState(inventoryKey)
+	if err != nil {
+		return err
+	}
+
+	var inventory MaterialInventory
+	var transferQuantity float64 = 1 // Default quantity
+
+	// Get the transfer details to find actual quantity
+	transferKey := "transfer_" + transferID
+	transferJSON, err := ctx.GetStub().GetState(transferKey)
+	if err == nil && transferJSON != nil {
+		var transfer Transfer
+		err = json.Unmarshal(transferJSON, &transfer)
+		if err == nil {
+			// Get quantity from metadata
+			if qtyVal, ok := transfer.Metadata["quantity"]; ok {
+				switch v := qtyVal.(type) {
+				case float64:
+					transferQuantity = v
+				case int:
+					transferQuantity = float64(v)
+				case string:
+					qty, _ := strconv.ParseFloat(v, 64)
+					transferQuantity = qty
+				}
+			}
+		}
+	}
+
+	if inventoryJSON == nil {
+		// Create new inventory for returned materials
+		inventory = MaterialInventory{
+			ID:           fmt.Sprintf("%s_%s", materialID, receiver),
+			MaterialID:   materialID,
+			Batch:        "RETURN-" + transferID,
+			Owner:        receiver,
+			Supplier:     "RETURN", // Return transfer supplier
+			Type:         "RETURNED",
+			TotalReceived: 0, // Will be updated below
+			Available:    0, // Will be updated below
+			Used:         0,
+			Transfers:    []MaterialTransferRecord{},
+		}
+	} else {
+		err = json.Unmarshal(inventoryJSON, &inventory)
+		if err != nil {
+			return err
+		}
+	}
+
+	// Add the return transfer to transfers list
+	inventory.Transfers = append(inventory.Transfers, MaterialTransferRecord{
+		TransferID:   transferID,
+		From:         "RETURN", // Return transfer
+		To:           receiver,
+		Quantity:     transferQuantity,
+		TransferDate: time.Now().Format(time.RFC3339),
+		Status:       "COMPLETED",
+		Verified:     true,
+	})
+
+	// Update inventory quantities (add returned quantity)
+	inventory.TotalReceived += transferQuantity
+	inventory.Available += transferQuantity
+
+	// Save updated inventory
+	updatedJSON, err := json.Marshal(inventory)
+	if err != nil {
+		return err
+	}
+
+	err = ctx.GetStub().PutState(inventoryKey, updatedJSON)
+	if err != nil {
+		return err
+	}
+
+	// Notify consensus of receipt confirmation
+	consensus := NewConsensusIntegration("2check-consensus", "luxury-supply-chain")
+	err = consensus.NotifyConsensusOfReceived(ctx, transferID, receiver)
+	if err != nil {
+		// Log but don't fail - return transfer is already complete
+		fmt.Printf("Warning: Failed to notify consensus of return receipt: %v\n", err)
+	}
+
+	// Emit event
+	eventData := map[string]interface{}{
+		"transferID": transferID,
+		"materialID": materialID,
+		"receiver":   receiver,
+		"quantity":   transferQuantity,
+		"isReturn":   true,
+	}
+	eventJSON, _ := json.Marshal(eventData)
+	ctx.GetStub().SetEvent("ReturnTransferReceiptConfirmed", eventJSON)
 
 	return nil
 }
@@ -825,6 +1259,221 @@ func (s *SupplyChainContract) GetAllMaterialInventories(ctx contractapi.Transact
 	return inventories, nil
 }
 
+// VerifyProductByBatch allows customer to verify a product using batch QR code and unique identifier
+func (s *SupplyChainContract) VerifyProductByBatch(ctx contractapi.TransactionContextInterface,
+	batchID string, uniqueIdentifier string) (*Product, error) {
+	
+	// Get batch
+	batchJSON, err := ctx.GetStub().GetState("batch_" + batchID)
+	if err != nil {
+		return nil, err
+	}
+	if batchJSON == nil {
+		return nil, fmt.Errorf("batch %s not found", batchID)
+	}
+	
+	var batch ProductBatch
+	err = json.Unmarshal(batchJSON, &batch)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Find product with matching unique identifier
+	var targetProductID string
+	for _, productID := range batch.ProductIDs {
+		product, err := s.GetProduct(ctx, productID)
+		if err != nil {
+			continue
+		}
+		if product.UniqueIdentifier == uniqueIdentifier {
+			targetProductID = productID
+			break
+		}
+	}
+	
+	if targetProductID == "" {
+		return nil, fmt.Errorf("product with identifier %s not found in batch %s", uniqueIdentifier, batchID)
+	}
+	
+	// Get and return the product
+	return s.GetProduct(ctx, targetProductID)
+}
+
+// TakeOwnership records customer ownership of a product
+// Called by RETAILER organization after customer purchase (customer auth handled off-chain)
+// Now includes securityHash (password+PIN) for secure transfers
+func (s *SupplyChainContract) TakeOwnership(ctx contractapi.TransactionContextInterface,
+	productID string, ownerHash string, securityHash string, purchaseLocation string) error {
+	
+	// Get caller identity
+	caller, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get caller identity: %v", err)
+	}
+	
+	// CHECK PERMISSION - Only retailers can assign ownership to customers
+	roleContract := &RoleManagementContract{}
+	hasPermission, err := roleContract.CheckPermission(ctx, caller, "TAKE_OWNERSHIP")
+	if err != nil || !hasPermission {
+		return fmt.Errorf("caller %s does not have permission to assign ownership", caller)
+	}
+	
+	// Get product
+	product, err := s.GetProduct(ctx, productID)
+	if err != nil {
+		return err
+	}
+	
+	// Verify product is at retailer and available for sale
+	if product.Status != ProductStatusInStore {
+		return fmt.Errorf("product is not available for sale, current status: %s", product.Status)
+	}
+	
+	// Check if already owned
+	ownershipKey := "ownership_" + productID
+	existingOwnership, _ := ctx.GetStub().GetState(ownershipKey)
+	if existingOwnership != nil {
+		return fmt.Errorf("product already has an owner")
+	}
+	
+	// Create ownership record
+	ownership := Ownership{
+		ProductID:        productID,
+		OwnerHash:        ownerHash,
+		SecurityHash:     securityHash,  // Store security hash for PIN verification
+		OwnershipDate:    time.Now().Format(time.RFC3339),
+		PurchaseLocation: purchaseLocation,
+		Status:           OwnershipStatusActive,
+		ServiceHistory:   []ServiceRecord{},
+		PreviousOwners:   []PreviousOwner{},
+	}
+	
+	// Store ownership
+	ownershipJSON, err := json.Marshal(ownership)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(ownershipKey, ownershipJSON)
+	if err != nil {
+		return err
+	}
+	
+	// Update product status and ownership
+	product.Status = ProductStatusSold
+	product.OwnershipHash = ownerHash
+	product.CurrentOwner = "customer" // Generic label for privacy (actual owner identified by hash)
+	product.IsStolen = false
+	
+	productJSON, err := json.Marshal(product)
+	if err != nil {
+		return err
+	}
+	err = ctx.GetStub().PutState(productID, productJSON)
+	if err != nil {
+		return err
+	}
+	
+	// Update batch status if needed
+	if product.BatchID != "" {
+		err = s.updateBatchStatus(ctx, product.BatchID)
+		if err != nil {
+			// Log error but don't fail the ownership transfer
+			fmt.Printf("Warning: failed to update batch status: %v\n", err)
+		}
+	}
+	
+	// Emit event
+	ctx.GetStub().SetEvent("OwnershipTaken", ownershipJSON)
+	
+	return nil
+}
+
+// updateBatchStatus updates batch status based on sold products
+func (s *SupplyChainContract) updateBatchStatus(ctx contractapi.TransactionContextInterface,
+	batchID string) error {
+	
+	// Get batch
+	batch, err := s.GetBatch(ctx, batchID)
+	if err != nil {
+		return err
+	}
+	
+	// Count sold products
+	soldCount := 0
+	for _, productID := range batch.ProductIDs {
+		product, err := s.GetProduct(ctx, productID)
+		if err != nil {
+			continue
+		}
+		if product.Status == ProductStatusSold {
+			soldCount++
+		}
+	}
+	
+	// Update batch status
+	if soldCount == 0 {
+		// No change needed
+		return nil
+	} else if soldCount == batch.Quantity {
+		batch.Status = BatchStatusSold
+	} else {
+		batch.Status = BatchStatusPartial
+	}
+	
+	// Save updated batch
+	batchJSON, err := json.Marshal(batch)
+	if err != nil {
+		return err
+	}
+	
+	return ctx.GetStub().PutState("batch_"+batchID, batchJSON)
+}
+
+// GetBatch retrieves a batch by ID
+func (s *SupplyChainContract) GetBatch(ctx contractapi.TransactionContextInterface,
+	batchID string) (*ProductBatch, error) {
+	
+	batchJSON, err := ctx.GetStub().GetState("batch_" + batchID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read batch: %v", err)
+	}
+	if batchJSON == nil {
+		return nil, fmt.Errorf("batch %s does not exist", batchID)
+	}
+	
+	var batch ProductBatch
+	err = json.Unmarshal(batchJSON, &batch)
+	if err != nil {
+		return nil, err
+	}
+	
+	return &batch, nil
+}
+
+// GetPublicProductInfo returns only public information about a product
+func (s *SupplyChainContract) GetPublicProductInfo(ctx contractapi.TransactionContextInterface, 
+	productID string) (map[string]interface{}, error) {
+	
+	product, err := s.GetProduct(ctx, productID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Return only public fields
+	publicInfo := map[string]interface{}{
+		"id":           product.ID,
+		"batchId":      product.BatchID,
+		"brand":        product.Brand,
+		"type":         product.Type,
+		"status":       product.Status,
+		"isStolen":     product.IsStolen,
+		"hasOwner":     product.OwnershipHash != "",
+		"createdAt":    product.CreatedAt,
+	}
+	
+	return publicInfo, nil
+}
+
 // GetAllProducts returns all products from the blockchain
 func (s *SupplyChainContract) GetAllProducts(ctx contractapi.TransactionContextInterface) ([]*Product, error) {
 	// Query all products - we'll use a range query to get all product keys
@@ -854,6 +1503,10 @@ func (s *SupplyChainContract) GetAllProducts(ctx contractapi.TransactionContextI
 			// Skip items that don't unmarshal as products
 			continue
 		}
+		// Ensure Materials is never nil
+		if product.Materials == nil {
+			product.Materials = []Material{}
+		}
 
 		// Verify it's actually a product by checking required fields
 		if product.ID != "" && product.Brand != "" {
@@ -862,4 +1515,600 @@ func (s *SupplyChainContract) GetAllProducts(ctx contractapi.TransactionContextI
 	}
 
 	return products, nil
+}
+
+// UpdateTransferStatus updates the status of a material transfer
+func (s *SupplyChainContract) UpdateTransferStatus(ctx contractapi.TransactionContextInterface, 
+	transferID string, status string) error {
+	
+	// Query all material inventories to find the transfer
+	inventories, err := s.GetAllMaterialInventories(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get inventories: %v", err)
+	}
+	
+	// Find and update the transfer
+	found := false
+	for _, inventory := range inventories {
+		for i, transfer := range inventory.Transfers {
+			if transfer.TransferID == transferID {
+				// Update the transfer status
+				inventory.Transfers[i].Status = status
+				
+				// If disputed, mark as not verified
+				if status == "DISPUTED" {
+					inventory.Transfers[i].Verified = false
+				}
+				
+				// Save the updated inventory
+				inventoryKey := fmt.Sprintf("material_inventory_%s_%s", inventory.MaterialID, inventory.Owner)
+				inventoryJSON, err := json.Marshal(inventory)
+				if err != nil {
+					return fmt.Errorf("failed to marshal inventory: %v", err)
+				}
+				
+				err = ctx.GetStub().PutState(inventoryKey, inventoryJSON)
+				if err != nil {
+					return fmt.Errorf("failed to update inventory: %v", err)
+				}
+				
+				found = true
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	
+	if !found {
+		return fmt.Errorf("transfer %s not found", transferID)
+	}
+	
+	return nil
+}
+
+// GetMaterialTransfer retrieves a material transfer by ID
+func (s *SupplyChainContract) GetMaterialTransfer(ctx contractapi.TransactionContextInterface, transferID string) (*MaterialTransferRecord, error) {
+	// Search through all material inventories to find the transfer
+	resultsIterator, err := ctx.GetStub().GetStateByPartialCompositeKey("material_inventory", []string{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get material inventories: %v", err)
+	}
+	defer resultsIterator.Close()
+	
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, fmt.Errorf("failed to iterate: %v", err)
+		}
+		
+		var inventory MaterialInventory
+		err = json.Unmarshal(queryResponse.Value, &inventory)
+		if err != nil {
+			continue
+		}
+		
+		for _, transfer := range inventory.Transfers {
+			if transfer.TransferID == transferID {
+				return &transfer, nil
+			}
+		}
+	}
+	
+	return nil, fmt.Errorf("transfer %s not found", transferID)
+}
+
+// ============= MISSING FUNCTIONS IMPLEMENTATION =============
+
+// GetProductsByBatch retrieves all products in a batch
+func (s *SupplyChainContract) GetProductsByBatch(ctx contractapi.TransactionContextInterface,
+	batchID string) ([]*Product, error) {
+	
+	// Get the batch first
+	batch, err := s.GetBatch(ctx, batchID)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Get all products in the batch
+	var products []*Product
+	for _, productID := range batch.ProductIDs {
+		product, err := s.GetProduct(ctx, productID)
+		if err != nil {
+			continue // Skip if product not found
+		}
+		products = append(products, product)
+	}
+	
+	return products, nil
+}
+
+// GetAllBatches retrieves all batches from the blockchain
+func (s *SupplyChainContract) GetAllBatches(ctx contractapi.TransactionContextInterface) ([]*ProductBatch, error) {
+	// Query all batches
+	resultsIterator, err := ctx.GetStub().GetStateByRange("batch_", "batch_~")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query batches: %v", err)
+	}
+	defer resultsIterator.Close()
+	
+	var batches []*ProductBatch
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		
+		var batch ProductBatch
+		err = json.Unmarshal(queryResponse.Value, &batch)
+		if err != nil {
+			continue
+		}
+		
+		batches = append(batches, &batch)
+	}
+	
+	return batches, nil
+}
+
+// GetBatchesByOrganization retrieves all batches owned by an organization
+func (s *SupplyChainContract) GetBatchesByOrganization(ctx contractapi.TransactionContextInterface,
+	orgMSPID string) ([]*ProductBatch, error) {
+	
+	// Get all batches
+	allBatches, err := s.GetAllBatches(ctx)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Filter by organization
+	var orgBatches []*ProductBatch
+	for _, batch := range allBatches {
+		if batch.CurrentOwner == orgMSPID {
+			orgBatches = append(orgBatches, batch)
+		}
+	}
+	
+	return orgBatches, nil
+}
+
+// UpdateBatchLocation updates the location and status of a batch
+func (s *SupplyChainContract) UpdateBatchLocation(ctx contractapi.TransactionContextInterface,
+	batchID string, newLocation string, newStatus string) error {
+	
+	// Get caller identity to verify permission
+	caller, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get caller identity: %v", err)
+	}
+	
+	// CHECK PERMISSION - Only warehouses can update locations
+	roleContract := &RoleManagementContract{}
+	hasPermission, err := roleContract.CheckPermission(ctx, caller, "UPDATE_LOCATION")
+	if err != nil || !hasPermission {
+		return fmt.Errorf("caller %s does not have permission to update batch location", caller)
+	}
+	
+	// Get batch
+	batch, err := s.GetBatch(ctx, batchID)
+	if err != nil {
+		return err
+	}
+	
+	// Verify caller owns the batch
+	if batch.CurrentOwner != caller {
+		return fmt.Errorf("only the current owner can update batch location")
+	}
+	
+	// Update location
+	batch.CurrentLocation = newLocation
+	
+	// Update status if provided
+	if newStatus != "" {
+		var status BatchStatus
+		switch newStatus {
+		case "CREATED":
+			status = BatchStatusCreated
+		case "IN_TRANSIT":
+			status = BatchStatusInTransit
+		case "AT_WAREHOUSE":
+			status = BatchStatusAtWarehouse
+		case "AT_RETAILER":
+			status = BatchStatusAtRetailer
+		case "PARTIAL":
+			status = BatchStatusPartial
+		case "SOLD_OUT":
+			status = BatchStatusSold
+		default:
+			return fmt.Errorf("invalid batch status: %s", newStatus)
+		}
+		batch.Status = status
+	}
+	
+	// Save updated batch
+	batchJSON, err := json.Marshal(batch)
+	if err != nil {
+		return err
+	}
+	
+	return ctx.GetStub().PutState("batch_"+batchID, batchJSON)
+}
+
+// ProcessReturn handles inventory adjustments after dispute resolution
+func (s *SupplyChainContract) ProcessReturn(ctx contractapi.TransactionContextInterface,
+	returnTransferID string, itemType string, itemID string, quantity int) error {
+	
+	// Get the return transfer
+	transfer, err := s.GetTransfer(ctx, returnTransferID)
+	if err != nil {
+		return err
+	}
+	
+	// Verify this is a return transfer
+	if transfer.TransferType != TransferTypeReturn {
+		return fmt.Errorf("transfer %s is not a return transfer", returnTransferID)
+	}
+	
+	// Check item type
+	if itemType == "MATERIAL" {
+		// Handle material return
+		fromInventoryKey := fmt.Sprintf("material_inventory_%s_%s", itemID, transfer.From)
+		toInventoryKey := fmt.Sprintf("material_inventory_%s_%s", itemID, transfer.To)
+		
+		// Reduce from sender's inventory
+		fromInventoryJSON, err := ctx.GetStub().GetState(fromInventoryKey)
+		if err != nil {
+			return err
+		}
+		if fromInventoryJSON != nil {
+			var fromInventory MaterialInventory
+			json.Unmarshal(fromInventoryJSON, &fromInventory)
+			fromInventory.Available -= float64(quantity)
+			
+			updatedFromJSON, _ := json.Marshal(fromInventory)
+			ctx.GetStub().PutState(fromInventoryKey, updatedFromJSON)
+		}
+		
+		// Add to receiver's inventory
+		toInventoryJSON, err := ctx.GetStub().GetState(toInventoryKey)
+		if err != nil {
+			return err
+		}
+		if toInventoryJSON != nil {
+			var toInventory MaterialInventory
+			json.Unmarshal(toInventoryJSON, &toInventory)
+			toInventory.Available += float64(quantity)
+			
+			updatedToJSON, _ := json.Marshal(toInventory)
+			ctx.GetStub().PutState(toInventoryKey, updatedToJSON)
+		}
+	} else if itemType == "PRODUCT" || itemType == "BATCH" {
+		// Handle product/batch return
+		if itemType == "BATCH" {
+			// Update batch ownership
+			batch, err := s.GetBatch(ctx, itemID)
+			if err != nil {
+				return err
+			}
+			
+			batch.CurrentOwner = transfer.To
+			batch.CurrentLocation = transfer.To
+			
+			batchJSON, _ := json.Marshal(batch)
+			ctx.GetStub().PutState("batch_"+itemID, batchJSON)
+			
+			// Update all products in batch
+			for _, productID := range batch.ProductIDs {
+				product, err := s.GetProduct(ctx, productID)
+				if err == nil {
+					product.CurrentOwner = transfer.To
+					product.CurrentLocation = transfer.To
+					productJSON, _ := json.Marshal(product)
+					ctx.GetStub().PutState(productID, productJSON)
+				}
+			}
+		} else {
+			// Update single product
+			product, err := s.GetProduct(ctx, itemID)
+			if err != nil {
+				return err
+			}
+			
+			product.CurrentOwner = transfer.To
+			product.CurrentLocation = transfer.To
+			
+			productJSON, _ := json.Marshal(product)
+			ctx.GetStub().PutState(itemID, productJSON)
+		}
+	}
+	
+	// Mark transfer as processed
+	transfer.Status = TransferStatusCompleted
+	transfer.CompletedAt = time.Now().Format(time.RFC3339)
+	
+	transferJSON, _ := json.Marshal(transfer)
+	ctx.GetStub().PutState("transfer_"+returnTransferID, transferJSON)
+	
+	// Emit event
+	eventData := map[string]interface{}{
+		"transferID": returnTransferID,
+		"itemType":   itemType,
+		"itemID":     itemID,
+		"quantity":   quantity,
+		"from":       transfer.From,
+		"to":         transfer.To,
+	}
+	eventJSON, _ := json.Marshal(eventData)
+	ctx.GetStub().SetEvent("ReturnProcessed", eventJSON)
+	
+	return nil
+}
+
+// ProcessCustomerReturn handles direct returns from customers to retailers
+// No consensus needed since customers aren't blockchain participants
+func (s *SupplyChainContract) ProcessCustomerReturn(ctx contractapi.TransactionContextInterface,
+	productID string, reason string, retailerMSPID string) error {
+	
+	// Get product
+	product, err := s.GetProduct(ctx, productID)
+	if err != nil {
+		return fmt.Errorf("failed to get product: %v", err)
+	}
+	
+	// Verify product has customer ownership
+	if product.OwnershipHash == "" {
+		return fmt.Errorf("product %s has no customer owner", productID)
+	}
+	
+	// Verify retailer is valid
+	roleContract := &RoleManagementContract{}
+	retailerRole, err := roleContract.GetOrganizationRole(ctx, retailerMSPID)
+	if err != nil {
+		return fmt.Errorf("invalid retailer: %v", err)
+	}
+	if retailerRole != RoleRetailer {
+		return fmt.Errorf("%s is not a retailer", retailerMSPID)
+	}
+	
+	// Clear customer ownership
+	product.OwnershipHash = "NONE"
+	product.Status = ProductStatusInStore // Back in store, not "SOLD" anymore
+	product.CurrentOwner = retailerMSPID
+	product.CurrentLocation = retailerMSPID
+	
+	// Add return reason to metadata
+	if product.Metadata == nil {
+		product.Metadata = make(map[string]interface{})
+	}
+	product.Metadata["lastReturnReason"] = reason
+	product.Metadata["lastReturnDate"] = time.Now().Format(time.RFC3339)
+	product.Metadata["returnedFrom"] = "CUSTOMER"
+	
+	// Clear ownership record
+	ownershipKey := "ownership_" + productID
+	err = ctx.GetStub().DelState(ownershipKey)
+	if err != nil {
+		return fmt.Errorf("failed to clear ownership record: %v", err)
+	}
+	
+	// Save updated product
+	productJSON, err := json.Marshal(product)
+	if err != nil {
+		return err
+	}
+	
+	err = ctx.GetStub().PutState(productID, productJSON)
+	if err != nil {
+		return err
+	}
+	
+	// Update batch status if needed
+	if product.BatchID != "" {
+		batch, err := s.GetBatch(ctx, product.BatchID)
+		if err == nil {
+			// Check if any products from this batch are still sold
+			stillSold := false
+			for _, pid := range batch.ProductIDs {
+				p, err := s.GetProduct(ctx, pid)
+				if err == nil && p.Status == ProductStatusSold {
+					stillSold = true
+					break
+				}
+			}
+			if !stillSold {
+				batch.Status = BatchStatusAtRetailer
+				batchJSON, _ := json.Marshal(batch)
+				ctx.GetStub().PutState("batch_"+batch.ID, batchJSON)
+			}
+		}
+	}
+	
+	// Emit event
+	eventData := map[string]interface{}{
+		"productID": productID,
+		"reason":    reason,
+		"retailer":  retailerMSPID,
+		"timestamp": time.Now().Format(time.RFC3339),
+	}
+	eventJSON, _ := json.Marshal(eventData)
+	ctx.GetStub().SetEvent("CustomerReturnProcessed", eventJSON)
+	
+	return nil
+}
+
+// GetTransfersByProduct retrieves all transfers for a specific product
+func (s *SupplyChainContract) GetTransfersByProduct(ctx contractapi.TransactionContextInterface,
+	productID string) ([]*Transfer, error) {
+	
+	// Query all transfers
+	resultsIterator, err := ctx.GetStub().GetStateByRange("transfer_", "transfer_~")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transfers: %v", err)
+	}
+	defer resultsIterator.Close()
+	
+	var transfers []*Transfer
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		
+		var transfer Transfer
+		err = json.Unmarshal(queryResponse.Value, &transfer)
+		if err != nil {
+			continue
+		}
+		
+		// Check if this transfer involves the product
+		if transfer.ProductID == productID {
+			transfers = append(transfers, &transfer)
+		}
+		
+		// Also check if it's a batch containing this product
+		if transfer.Metadata != nil {
+			if batchType, ok := transfer.Metadata["type"].(string); ok && batchType == "BATCH" {
+				// Get the batch to check if it contains the product
+				batch, err := s.GetBatch(ctx, transfer.ProductID)
+				if err == nil {
+					for _, pid := range batch.ProductIDs {
+						if pid == productID {
+							transfers = append(transfers, &transfer)
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+	
+	return transfers, nil
+}
+
+// GetPendingTransfers retrieves all pending transfers for an organization
+func (s *SupplyChainContract) GetPendingTransfers(ctx contractapi.TransactionContextInterface,
+	orgMSPID string) ([]*Transfer, error) {
+	
+	// Query all transfers
+	resultsIterator, err := ctx.GetStub().GetStateByRange("transfer_", "transfer_~")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transfers: %v", err)
+	}
+	defer resultsIterator.Close()
+	
+	var pendingTransfers []*Transfer
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		
+		var transfer Transfer
+		err = json.Unmarshal(queryResponse.Value, &transfer)
+		if err != nil {
+			continue
+		}
+		
+		// Check if transfer is pending and involves the organization
+		if transfer.Status != TransferStatusCompleted && transfer.Status != TransferStatusCancelled {
+			if transfer.From == orgMSPID || transfer.To == orgMSPID {
+				// Skip return transfers from dispute resolutions - they should be handled separately
+				if metadata, ok := transfer.Metadata["resolutionType"].(string); ok && metadata == "dispute_resolution" {
+					continue
+				}
+				pendingTransfers = append(pendingTransfers, &transfer)
+			}
+		}
+	}
+	
+	return pendingTransfers, nil
+}
+
+// GetDisputeReturnTransfers retrieves all pending return transfers from dispute resolutions
+func (s *SupplyChainContract) GetDisputeReturnTransfers(ctx contractapi.TransactionContextInterface,
+	orgMSPID string) ([]*Transfer, error) {
+	
+	// Query all transfers
+	resultsIterator, err := ctx.GetStub().GetStateByRange("transfer_", "transfer_~")
+	if err != nil {
+		return nil, fmt.Errorf("failed to query transfers: %v", err)
+	}
+	defer resultsIterator.Close()
+	
+	var returnTransfers []*Transfer
+	for resultsIterator.HasNext() {
+		queryResponse, err := resultsIterator.Next()
+		if err != nil {
+			return nil, err
+		}
+		
+		var transfer Transfer
+		err = json.Unmarshal(queryResponse.Value, &transfer)
+		if err != nil {
+			continue
+		}
+		
+		// Check if this is a dispute return transfer
+		if resolutionType, ok := transfer.Metadata["resolutionType"].(string); ok && resolutionType == "dispute_resolution" {
+			// Check if transfer is pending and involves the organization
+			if transfer.Status != TransferStatusCompleted && transfer.Status != TransferStatusCancelled {
+				if transfer.From == orgMSPID || transfer.To == orgMSPID {
+					returnTransfers = append(returnTransfers, &transfer)
+				}
+			}
+		}
+	}
+	
+	return returnTransfers, nil
+}
+
+// GetDashboardStats returns dashboard statistics for an organization
+func (s *SupplyChainContract) GetDashboardStats(ctx contractapi.TransactionContextInterface,
+	orgMSPID string) (map[string]interface{}, error) {
+	
+	stats := make(map[string]interface{})
+	
+	// Get organization role
+	roleContract := &RoleManagementContract{}
+	orgRole, _ := roleContract.GetOrganizationRole(ctx, orgMSPID)
+	stats["organizationRole"] = string(orgRole)
+	
+	// Count products owned
+	allProducts, _ := s.GetAllProducts(ctx)
+	productCount := 0
+	for _, product := range allProducts {
+		if product.CurrentOwner == orgMSPID {
+			productCount++
+		}
+	}
+	stats["totalProducts"] = productCount
+	
+	// Count batches owned
+	batches, _ := s.GetBatchesByOrganization(ctx, orgMSPID)
+	stats["totalBatches"] = len(batches)
+	
+	// Count pending transfers
+	pendingTransfers, _ := s.GetPendingTransfers(ctx, orgMSPID)
+	stats["pendingTransfers"] = len(pendingTransfers)
+	
+	// Count materials (if applicable)
+	if orgRole == RoleSupplier || orgRole == RoleManufacturer {
+		inventories, _ := s.GetAllMaterialInventories(ctx)
+		materialCount := 0
+		totalAvailable := 0.0
+		for _, inv := range inventories {
+			if inv.Owner == orgMSPID {
+				materialCount++
+				totalAvailable += inv.Available
+			}
+		}
+		stats["totalMaterials"] = materialCount
+		stats["availableMaterialQuantity"] = totalAvailable
+	}
+	
+	// Add timestamp
+	stats["timestamp"] = time.Now().Format(time.RFC3339)
+	
+	return stats, nil
 }

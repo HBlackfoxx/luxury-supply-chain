@@ -27,21 +27,24 @@ export function DisputeModal({ isOpen, onClose, transactionId, transactionDetail
     mutationFn: async () => {
       if (!api) throw new Error('API not available')
       
-      const formData = new FormData()
-      formData.append('type', disputeType)
-      formData.append('reason', reason)
-      evidence.forEach(file => formData.append('evidence', file))
-
+      // Get the requested return quantity from the input field
+      const quantityInput = document.getElementById('requestedReturnQuantity') as HTMLInputElement
+      const requestedReturnQuantity = parseInt(quantityInput?.value || '0')
+      
+      console.log('Creating dispute with type:', disputeType)
+      const disputeData = {
+        type: disputeType, // Keep uppercase as chaincode expects (NOT_RECEIVED, DEFECTIVE, etc.)
+        evidence: {
+          description: reason,
+          timestamp: new Date().toISOString(),
+          files: evidence.map(f => f.name)
+        },
+        requestedReturnQuantity
+      }
+      console.log('Sending dispute data:', disputeData)
       const { data } = await api.post(
         `/api/consensus/transactions/${transactionId}/dispute`,
-        {
-          type: disputeType,
-          reason,
-          initialEvidence: {
-            description: reason,
-            files: evidence.map(f => f.name)
-          }
-        }
+        disputeData
       )
       return data
     },
@@ -56,10 +59,11 @@ export function DisputeModal({ isOpen, onClose, transactionId, transactionDetail
 
   const disputeTypes = [
     { value: 'NOT_RECEIVED', label: 'Goods Not Received' },
-    { value: 'DAMAGED', label: 'Goods Damaged' },
+    { value: 'DEFECTIVE', label: 'Defective/Damaged Goods' },
     { value: 'WRONG_ITEM', label: 'Wrong Item Received' },
     { value: 'QUALITY_ISSUE', label: 'Quality Issues' },
     { value: 'QUANTITY_MISMATCH', label: 'Quantity Mismatch' },
+    { value: 'NOT_SENT', label: 'Not Sent by Supplier' },
     { value: 'TIMEOUT', label: 'Partner Not Responding' }
   ]
 
@@ -132,6 +136,24 @@ export function DisputeModal({ isOpen, onClose, transactionId, transactionDetail
                   placeholder="Provide details about the issue..."
                   required
                 />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Requested Return Quantity
+                </label>
+                <input
+                  type="number"
+                  min="0"
+                  step="1"
+                  defaultValue={transactionDetails.value || 0}
+                  className="w-full border-gray-300 rounded-md focus:ring-luxury-gold focus:border-luxury-gold"
+                  placeholder="Enter quantity to return..."
+                  id="requestedReturnQuantity"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  For material transfers, specify the quantity to return
+                </p>
               </div>
 
               <div>

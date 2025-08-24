@@ -19,6 +19,7 @@ import {
 import { useApi } from '@/hooks/use-api'
 import { useAuthStore } from '@/stores/auth-store'
 import { DisputeModal } from './dispute-modal'
+import { notifications } from '@/lib/notifications'
 
 interface DisputeEvidence {
   id: string
@@ -33,17 +34,23 @@ interface Dispute {
   transactionId: string
   initiator: string
   respondent: string
+  sender?: string
+  receiver?: string
   type: string
   reason: string
   status: 'OPEN' | 'INVESTIGATING' | 'RESOLVED' | 'ESCALATED'
   createdAt: string
   updatedAt: string
   resolution?: {
+    disputeId?: string  // The actual dispute ID (e.g., DISPUTE-MAT-TRANSFER-xxx-timestamp)
     decision: string
+    requiredAction?: 'RETURN' | 'RESEND' | 'REPLACE' | 'RESEND_PARTIAL' | 'NONE'
     compensationAmount?: number
     resolvedBy: string
     resolvedAt: string
     notes: string
+    actionCompleted?: boolean
+    followUpTxId?: string
   }
   evidence: DisputeEvidence[]
   transactionDetails: {
@@ -52,6 +59,9 @@ interface Dispute {
     sender: string
     receiver: string
     timestamp: string
+    itemType?: 'PRODUCT' | 'BATCH' | 'MATERIAL'
+    itemId?: string
+    quantity?: number
   }
 }
 
@@ -77,7 +87,7 @@ export function DisputeManagement() {
     queryKey: ['organization-disputes', user?.organization],
     queryFn: async () => {
       if (!api || !user) return []
-      const { data } = await api.get<Dispute[]>(`/api/consensus/disputes/open/${user.organization}`)
+      const { data } = await api.get<Dispute[]>('/api/consensus/disputes')
       return data
     },
     enabled: !!api && !!user,
@@ -88,7 +98,7 @@ export function DisputeManagement() {
   const addEvidenceMutation = useMutation({
     mutationFn: async ({ disputeId, evidence }: { disputeId: string; evidence: typeof newEvidence }) => {
       if (!api) throw new Error('API not available')
-      const { data } = await api.post(`/api/consensus/disputes/${disputeId}/evidence`, {
+      const { data } = await api.post(`/api/consensus/dispute/${disputeId}/evidence`, {
         description: evidence.description,
         files: evidence.files.map(f => f.name)
       })
@@ -96,6 +106,7 @@ export function DisputeManagement() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organization-disputes'] })
+      notifications.evidenceSubmitted()
       setShowEvidenceModal(false)
       setNewEvidence({ description: '', files: [] })
     }
@@ -105,14 +116,81 @@ export function DisputeManagement() {
   const resolveDisputeMutation = useMutation({
     mutationFn: async ({ disputeId, resolution }: { disputeId: string; resolution: any }) => {
       if (!api) throw new Error('API not available')
-      const { data } = await api.post(`/api/consensus/disputes/${disputeId}/resolve`, resolution)
+      const { data } = await api.post(`/api/consensus/dispute/${disputeId}/resolve`, resolution)
       return data
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['organization-disputes'] })
+      notifications.disputeResolved(selectedDispute?.id || 'Dispute')
       setShowResolutionModal(false)
       setSelectedDispute(null)
       setResolution({ decision: '', compensationAmount: 0, notes: '' })
+    }
+  })
+
+  // Accept dispute mutation (for party admitting fault)
+  const acceptDisputeMutation = useMutation({
+    mutationFn: async (disputeId: string) => {
+      if (!api) throw new Error('API not available')
+      const { data } = await api.post(`/api/consensus/dispute/${disputeId}/accept`)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['organization-disputes'] })
+      notifications.success('Dispute accepted. The other party has been notified.')
+      setSelectedDispute(null)
+    }
+  })
+
+  // Create return transfer after dispute resolution
+  const createReturnTransferMutation = useMutation({
+    mutationFn: async (disputeId: string) => {
+      if (!api) throw new Error('API not available')
+      console.log('Creating return transfer with dispute ID:', disputeId)
+      const url = `/api/supply-chain/dispute/${disputeId}/create-return`
+      console.log('Request URL:', url)
+      const { data } = await api.post(url)
+      return data
+    },
+    onSuccess: async () => {
+      // Force refresh disputes to get updated actionCompleted status
+      await queryClient.invalidateQueries({ queryKey: ['organization-disputes'] })
+      await queryClient.refetchQueries({ queryKey: ['organization-disputes'] })
+      queryClient.invalidateQueries({ queryKey: ['transfers'] })
+      notifications.success('Return transfer created successfully')
+    },
+    onError: (error: any) => {
+      // Check if error is due to duplicate creation
+      if (error.response?.data?.message?.includes('already created')) {
+        notifications.success('Return transfer has already been created for this dispute')
+        // Refresh disputes to update UI
+        queryClient.invalidateQueries({ queryKey: ['organization-disputes'] })
+      } else {
+        notifications.success('Failed to create return transfer. Please try again.')
+      }
+    }
+  })
+
+  // Process return transfer
+  const processReturnMutation = useMutation({
+    mutationFn: async ({ transferId, itemType, itemId, quantity }: { 
+      transferId: string
+      itemType: 'PRODUCT' | 'BATCH' | 'MATERIAL'
+      itemId: string
+      quantity?: number
+    }) => {
+      if (!api) throw new Error('API not available')
+      const { data } = await api.post(`/api/supply-chain/transfer/${transferId}/process-return`, {
+        itemType,
+        itemId,
+        quantity: quantity || 1
+      })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['transfers'] })
+      queryClient.invalidateQueries({ queryKey: ['organization-disputes'] })
+      notifications.success('Return processed successfully')
     }
   })
 
@@ -136,8 +214,11 @@ export function DisputeManagement() {
       'NOT_RECEIVED': 'Goods Not Received',
       'DAMAGED': 'Goods Damaged',
       'WRONG_ITEM': 'Wrong Item',
+      'DEFECTIVE': 'Defective Product',
       'QUALITY_ISSUE': 'Quality Issues',
       'QUANTITY_MISMATCH': 'Quantity Mismatch',
+      'NOT_SENT': 'Not Sent by Sender',
+      'NOT_CONFIRMING': 'Receiver Not Confirming',
       'TIMEOUT': 'Partner Not Responding'
     }
     return types[type] || type
@@ -349,15 +430,30 @@ export function DisputeManagement() {
                       View Details
                     </button>
                     {dispute.status === 'OPEN' && (
-                      <button
-                        onClick={() => {
-                          setSelectedDispute(dispute)
-                          setShowEvidenceModal(true)
-                        }}
-                        className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
-                      >
-                        Add Evidence
-                      </button>
+                      <>
+                        <button
+                          onClick={() => {
+                            setSelectedDispute(dispute)
+                            setShowEvidenceModal(true)
+                          }}
+                          className="px-3 py-1.5 text-sm border border-gray-300 rounded hover:bg-gray-50"
+                        >
+                          Add Evidence
+                        </button>
+                        {dispute.respondent === user?.organization && (
+                          <button
+                            onClick={() => {
+                              if (confirm('Are you sure you want to accept this dispute? This acknowledges fault on your part.')) {
+                                acceptDisputeMutation.mutate(dispute.id)
+                              }
+                            }}
+                            disabled={acceptDisputeMutation.isPending}
+                            className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50"
+                          >
+                            Accept Dispute
+                          </button>
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -397,12 +493,58 @@ export function DisputeManagement() {
                       </p>
                     </div>
                   </div>
-                  <button
-                    onClick={() => setSelectedDispute(dispute)}
-                    className="text-sm text-luxury-gold hover:text-luxury-dark"
-                  >
-                    View
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={() => setSelectedDispute(dispute)}
+                      className="text-sm text-luxury-gold hover:text-luxury-dark"
+                    >
+                      View
+                    </button>
+                    {dispute.resolution?.decision?.includes('FAVOR') && 
+                     !dispute.resolution?.actionCompleted && 
+                     dispute.initiator === user?.organization && (
+                      <>
+                        <button
+                          onClick={() => {
+                            if (confirm('Create a return transfer based on this dispute resolution?')) {
+                              // Use the actual dispute ID from resolution, fallback to transaction ID
+                              const disputeIdToUse = dispute.resolution?.disputeId || dispute.id
+                              console.log('Dispute object:', dispute)
+                              console.log('Resolution object:', dispute.resolution)
+                              console.log('Using dispute ID:', disputeIdToUse)
+                              createReturnTransferMutation.mutate(disputeIdToUse)
+                            }
+                          }}
+                          disabled={createReturnTransferMutation.isPending}
+                          className="text-sm text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                        >
+                          Create Return
+                        </button>
+                        {dispute.resolution?.followUpTxId && dispute.initiator === user?.organization && (
+                          <button
+                            onClick={() => {
+                              const itemType = dispute.transactionDetails?.itemType || 'PRODUCT'
+                              const itemId = dispute.transactionDetails?.itemId || dispute.transactionId
+                              const quantity = dispute.transactionDetails?.quantity
+                              
+                              if (confirm(`Process ${itemType.toLowerCase()} return?`) && dispute.resolution?.followUpTxId) {
+                                processReturnMutation.mutate({
+                                  transferId: dispute.resolution.followUpTxId,
+                                  itemType,
+                                  itemId,
+                                  quantity
+                                })
+                              }
+                            }}
+                            disabled={processReturnMutation.isPending}
+                            className="text-sm text-green-600 hover:text-green-700 disabled:opacity-50"
+                          >
+                            Process Return
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}
@@ -505,8 +647,37 @@ export function DisputeManagement() {
                   <div className="bg-green-50 border border-green-200 rounded p-3">
                     <div className="mb-2">
                       <span className="text-sm font-medium text-green-900">Decision: </span>
-                      <span className="text-sm text-green-800">{selectedDispute.resolution.decision}</span>
+                      <span className="text-sm text-green-800">
+                        {selectedDispute.resolution.decision === 'IN_FAVOR_SENDER' ? 
+                          `In favor of ${selectedDispute.initiator === selectedDispute.sender ? 'initiator' : 'respondent'} (${selectedDispute.sender})` :
+                          selectedDispute.resolution.decision === 'IN_FAVOR_RECEIVER' ?
+                          `In favor of ${selectedDispute.initiator === selectedDispute.receiver ? 'initiator' : 'respondent'} (${selectedDispute.receiver})` :
+                          selectedDispute.resolution.decision}
+                      </span>
                     </div>
+                    {selectedDispute.resolution.requiredAction && (
+                      <div className="mb-2">
+                        <span className="text-sm font-medium text-green-900">Required Action: </span>
+                        <span className="text-sm text-green-800">
+                          {selectedDispute.resolution.requiredAction === 'RETURN' ? '📦 Return items to sender' :
+                           selectedDispute.resolution.requiredAction === 'RESEND' ? '🔄 Resend items to receiver' :
+                           selectedDispute.resolution.requiredAction === 'REPLACE' ? '🔧 Replace defective items' :
+                           selectedDispute.resolution.requiredAction === 'RESEND_PARTIAL' ? '📦 Send missing quantity' :
+                           selectedDispute.resolution.requiredAction}
+                        </span>
+                      </div>
+                    )}
+                    {(selectedDispute.resolution.requiredAction === 'RETURN' || 
+                      selectedDispute.resolution.requiredAction === 'RESEND' || 
+                      selectedDispute.resolution.requiredAction === 'REPLACE' ||
+                      selectedDispute.resolution.requiredAction === 'RESEND_PARTIAL') && (
+                      <div className="mb-2">
+                        <span className="text-sm font-medium text-green-900">Action Quantity: </span>
+                        <span className="text-sm text-green-800">
+                          {selectedDispute.transactionDetails?.quantity || 'N/A'} units
+                        </span>
+                      </div>
+                    )}
                     {selectedDispute.resolution.compensationAmount && (
                       <div className="mb-2">
                         <span className="text-sm font-medium text-green-900">Compensation: </span>

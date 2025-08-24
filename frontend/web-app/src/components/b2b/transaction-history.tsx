@@ -31,11 +31,12 @@ export function TransactionHistory() {
     queryFn: async () => {
       if (!api || !user?.organization) return []
       const params = new URLSearchParams()
-      if (filter !== 'all') params.append('type', filter.toUpperCase())
+      if (filter !== 'all') params.append('type', filter)
       if (statusFilter !== 'all') params.append('status', statusFilter)
       params.append('limit', '50')
       
-      const { data } = await api.get<Transaction[]>(`/api/consensus/transactions/history/${user.organization}?${params}`)
+      // Query directly from blockchain through supply chain API
+      const { data } = await api.get<Transaction[]>(`/api/supply-chain/transactions/history?${params}`)
       return data
     },
     enabled: !!api && !!user?.organization,

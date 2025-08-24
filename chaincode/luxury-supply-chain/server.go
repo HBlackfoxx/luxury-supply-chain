@@ -18,6 +18,7 @@ func main() {
 		chaincode, err := contractapi.NewChaincode(
 			&contracts.SupplyChainContract{},
 			&contracts.OwnershipContract{},
+			&contracts.RoleManagementContract{},
 		)
 		if err != nil {
 			log.Fatalf("Error creating luxury supply chain chaincode: %v", err)
@@ -33,6 +34,7 @@ func RunAsService() {
 	cc, err := contractapi.NewChaincode(
 		&contracts.SupplyChainContract{},
 		&contracts.OwnershipContract{},
+		&contracts.RoleManagementContract{},
 	)
 	if err != nil {
 		log.Fatalf("Error creating supply chain chaincode: %v", err)

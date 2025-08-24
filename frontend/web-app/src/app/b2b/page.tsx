@@ -8,12 +8,14 @@ import { PendingActions } from '@/components/b2b/pending-actions'
 import { TrustScoreDashboard } from '@/components/b2b/trust-score-dashboard'
 import { TransactionHistory } from '@/components/b2b/transaction-history'
 import { BatchOperations } from '@/components/b2b/batch-operations'
-import { AnomalyAlerts } from '@/components/b2b/anomaly-alerts'
+// import { AnomalyAlerts } from '@/components/b2b/anomaly-alerts' // Not in scope
 import { PerformanceCharts } from '@/components/b2b/performance-charts'
-import { EmergencyBanner } from '@/components/b2b/emergency-banner'
+// import { EmergencyBanner } from '@/components/b2b/emergency-banner' // Not in scope
 import { ProductManagement } from '@/components/b2b/product-management'
 import { AuditLogViewer } from '@/components/b2b/audit-log-viewer'
 import { DisputeManagement } from '@/components/b2b/dispute-management'
+import { DashboardStats } from '@/components/b2b/dashboard-stats'
+import { TransferStatusChecker } from '@/components/b2b/transfer-status'
 import { Header } from '@/components/layout/header'
 import { useAuthStore } from '@/stores/auth-store'
 import { useApi } from '@/hooks/use-api'
@@ -22,7 +24,7 @@ import { Package, TrendingUp, History, Layers, BarChart3, AlertTriangle } from '
 export default function B2BDashboard() {
   const router = useRouter()
   const { user, isAuthenticated, hasHydrated } = useAuthStore()
-  const [activeTab, setActiveTab] = useState('pending')
+  const [activeTab, setActiveTab] = useState('dashboard')
 
   const api = useApi()
 
@@ -41,9 +43,9 @@ export default function B2BDashboard() {
       
       // Fetch all data sources in parallel
       const [pendingRes, txHistoryRes, disputesRes] = await Promise.all([
-        api.get(`/api/consensus/transactions/pending/${user.organization}`).catch(() => ({ data: { count: 0, transactions: [] } })),
-        api.get(`/api/consensus/transactions/history/${user.organization}`).catch(() => ({ data: [] })),
-        api.get(`/api/consensus/disputes/open/${user.organization}`).catch(() => ({ data: [] }))
+        api.get('/api/supply-chain/transfers/pending').catch(() => ({ data: [] })),
+        api.get('/api/supply-chain/transactions/history').catch(() => ({ data: [] })),
+        api.get('/api/consensus/disputes').catch(() => ({ data: [] }))
       ])
       
       // Calculate trust score from transaction history
@@ -79,8 +81,11 @@ export default function B2BDashboard() {
         d.status === 'OPEN' || d.status === 'INVESTIGATING'
       ).length : 0
       
+      // Count pending transfers
+      const pendingTransfers = Array.isArray(pendingRes.data) ? pendingRes.data : []
+      
       return {
-        pending: pendingRes.data?.count || 0,
+        pending: pendingTransfers.length,
         trustScore,
         thisMonth,
         disputes
@@ -148,7 +153,7 @@ export default function B2BDashboard() {
   return (
     <>
       <Header />
-      <EmergencyBanner />
+      {/* <EmergencyBanner /> Not in scope */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
       {/* Header */}
       <div className="mb-8">
@@ -158,8 +163,8 @@ export default function B2BDashboard() {
         </p>
       </div>
 
-      {/* Anomaly Alerts */}
-      <AnomalyAlerts />
+      {/* Anomaly Alerts - Not in scope
+      <AnomalyAlerts /> */}
 
       {/* Stats Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -183,16 +188,22 @@ export default function B2BDashboard() {
 
       {/* Main Content Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
-        <TabsList className="grid w-full grid-cols-8">
-          <TabsTrigger value="pending">Pending Actions</TabsTrigger>
+        <TabsList className="grid w-full grid-cols-10">
+          <TabsTrigger value="dashboard">Dashboard</TabsTrigger>
+          <TabsTrigger value="pending">Pending</TabsTrigger>
           <TabsTrigger value="products">Products</TabsTrigger>
+          <TabsTrigger value="transfers">Transfers</TabsTrigger>
           <TabsTrigger value="disputes">Disputes</TabsTrigger>
-          <TabsTrigger value="trust">Trust Scores</TabsTrigger>
+          <TabsTrigger value="trust">Trust</TabsTrigger>
           <TabsTrigger value="history">History</TabsTrigger>
-          <TabsTrigger value="batch">Batch Operations</TabsTrigger>
+          <TabsTrigger value="batch">Batch</TabsTrigger>
           <TabsTrigger value="analytics">Analytics</TabsTrigger>
-          <TabsTrigger value="audit">Audit Log</TabsTrigger>
+          <TabsTrigger value="audit">Audit</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="dashboard" className="space-y-4">
+          <DashboardStats />
+        </TabsContent>
 
         <TabsContent value="pending" className="space-y-4">
           <PendingActions />
@@ -200,6 +211,11 @@ export default function B2BDashboard() {
 
         <TabsContent value="products" className="space-y-4">
           <ProductManagement />
+        </TabsContent>
+
+        <TabsContent value="transfers" className="space-y-4">
+          <TransferStatusChecker />
+          <PendingActions />
         </TabsContent>
 
         <TabsContent value="disputes" className="space-y-4">

@@ -142,6 +142,9 @@ echo -e "${YELLOW}Generating startup scripts...${NC}"
 cp network/scripts/*.sh $OUTPUT_DIR/scripts/
 chmod +x $OUTPUT_DIR/scripts/*.sh
 
+# Add the chaincode docker-compose
+cp network/docker-compose-chaincode.yml $OUTPUT_DIR/
+
 # Generate README for the generated network
 echo -e "${YELLOW}Generating documentation...${NC}"
 cat > $OUTPUT_DIR/README.md << EOF

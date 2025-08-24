@@ -66,10 +66,11 @@ TEST_ENV.md
 INTEGRATION_FIXES_NEEDED.md
 MISSING_FEATURES_B2B.md
 
-
-
+/frontend/customer-app/node_modules
 
 backup*
 chaincode/luxury-supply-chain/main.go.backup
 backend/uploads/*/*.json
 backend/uploads/*/*.png
+backend/dist
+/backend/customer-gateway/node_modules

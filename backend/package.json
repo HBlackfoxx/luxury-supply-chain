@@ -22,6 +22,7 @@
   "dependencies": {
     "@grpc/grpc-js": "^1.13.4",
     "@hyperledger/fabric-gateway": "^1.8.0",
+    "axios": "^1.11.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "date-fns": "^4.1.0",

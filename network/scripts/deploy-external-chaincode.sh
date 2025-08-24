@@ -412,7 +412,7 @@ main() {
     
     # Deploy 2check-consensus as external service
     # Use sequence 2 since it was already deployed before
-    deploy_external_chaincode "2check-consensus" "1.0" "2" "9999"
+    deploy_external_chaincode "2check-consensus" "1.0" "1" "9999"
     if [ $? -ne 0 ]; then
         print_error "Failed to deploy 2check-consensus"
         exit 1
@@ -424,7 +424,7 @@ main() {
     
     # Deploy luxury-supply-chain as external service
     # Use sequence 2 since it was already deployed before
-    deploy_external_chaincode "luxury-supply-chain" "1.0" "2" "9998"
+    deploy_external_chaincode "luxury-supply-chain" "1.0" "1" "9998"
     if [ $? -ne 0 ]; then
         print_error "Failed to deploy luxury-supply-chain"
         exit 1

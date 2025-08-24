@@ -14,7 +14,7 @@ services:
     environment:
       - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9999
       - CHAINCODE_ID=2check-consensus:1.0
-      - CORE_CHAINCODE_LOGGING_LEVEL=info
+      - CORE_CHAINCODE_LOGGING_LEVEL=debug
     ports:
       - "9999:9999"
     networks:
@@ -30,7 +30,7 @@ services:
     environment:
       - CHAINCODE_SERVER_ADDRESS=0.0.0.0:9998
       - CHAINCODE_ID=luxury-supply-chain:1.0
-      - CORE_CHAINCODE_LOGGING_LEVEL=info
+      - CORE_CHAINCODE_LOGGING_LEVEL=debug
     ports:
       - "9998:9998"
     networks:

@@ -2,10 +2,31 @@
 
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Plus, Package, QrCode, Send, Eye, Download, Layers, CheckCircle, AlertCircle } from 'lucide-react'
+import { Plus, Package, QrCode, Send, Eye, Download, Layers, CheckCircle, AlertCircle, X, ChevronDown, ChevronRight } from 'lucide-react'
 import { format } from 'date-fns'
 import { useAuthStore } from '@/stores/auth-store'
 import { useApi } from '@/hooks/use-api'
+import { notifications } from '@/lib/notifications'
+import toast from 'react-hot-toast'
+
+interface ServiceRecord {
+  id?: string
+  serviceType: string
+  description: string
+  technician: string
+  timestamp?: string
+  date?: string
+}
+
+interface Batch {
+  id: string
+  brand: string
+  productType: string
+  quantity: number
+  status: string
+  location?: string
+  materialIds?: string[]
+}
 
 interface Product {
   id: string
@@ -18,6 +39,9 @@ interface Product {
   currentLocation: string
   createdAt: string
   materials?: Material[]
+  qualityCheckpoints?: any[]
+  transferHistory?: any[]
+  serviceRecords?: ServiceRecord[]
   qrCode?: {
     url: string
     dataUrl?: string
@@ -27,7 +51,7 @@ interface Product {
 
 interface Material {
   id: string
-  materialId: string
+  materialId?: string  // Make optional since API sometimes returns one or the other
   type: string
   source: string
   supplier?: string
@@ -45,16 +69,25 @@ export function ProductManagement() {
   const { user } = useAuthStore()
   const api = useApi()
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [showBatchForm, setShowBatchForm] = useState(false)
   const [showMaterialForm, setShowMaterialForm] = useState(false)
   const [showAddMaterialToProduct, setShowAddMaterialToProduct] = useState(false)
-  const [showQualityForm, setShowQualityForm] = useState(false)
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null)
   const [showQRModal, setShowQRModal] = useState(false)
   const [qrProduct, setQrProduct] = useState<Product | null>(null)
   const [showTransferDialog, setShowTransferDialog] = useState(false)
+  const [showSellDialog, setShowSellDialog] = useState(false)
   const [selectedMaterial, setSelectedMaterial] = useState<Material | null>(null)
+  const [expandedBatches, setExpandedBatches] = useState<Set<string>>(new Set())
+  const [selectedBatch, setSelectedBatch] = useState<Batch | null>(null)
+  const [selectedProducts, setSelectedProducts] = useState<Set<string>>(new Set())
   const [transferQuantity, setTransferQuantity] = useState(1)
   const [materialFilter, setMaterialFilter] = useState<'all' | 'available' | 'unavailable'>('all')
+  const [customerInfo, setCustomerInfo] = useState({
+    customerId: '',
+    password: '',
+    pin: ''
+  })
   
   // New states for enhanced UI
   const [viewMode, setViewMode] = useState<'all' | 'products' | 'materials'>('all')
@@ -68,7 +101,27 @@ export function ProductManagement() {
     brand: '',
     name: '',
     type: '',
-    serialNumber: ''
+    serialNumber: '',
+    materials: [] as Array<{ 
+      id: string; 
+      type: string;
+      source: string;
+      supplier: string;
+      batch: string;
+      verification: string;
+      quantity: number;
+    }>
+  })
+  const [selectedMaterialsForProduct, setSelectedMaterialsForProduct] = useState<Array<{
+    materialId: string;
+    type: string;
+    batch: string;
+    quantity: number;
+    available: number;
+  }>>([])
+  const [materialToAdd, setMaterialToAdd] = useState({
+    materialId: '',
+    quantity: 1
   })
 
   // Form state for materials
@@ -92,23 +145,25 @@ export function ProductManagement() {
     verification: ''
   })
 
-  // Form state for quality checkpoint
-  const [qualityFormData, setQualityFormData] = useState({
-    productId: '',
-    checkpointId: '',
-    type: '',
-    inspector: '',
-    location: '',
-    passed: true,
-    details: ''
+  // Batch form state for manufacturers
+  const [batchFormData, setBatchFormData] = useState({
+    brand: 'LuxeBags',
+    productType: '',
+    quantity: 1,
+    materialIds: [] as string[]
   })
+  
+  // State for material input with quantities
+  const [materialInput, setMaterialInput] = useState('')
+  const [selectedMaterials, setSelectedMaterials] = useState<{ id: string; quantity: number }[]>([])
 
   // Determine user's role based on organization
   const isSupplier = user?.organization === 'italianleather'
   const isManufacturer = user?.organization === 'craftworkshop'
   const isRetailer = user?.organization === 'luxuryretail'
+  const isWarehouse = user?.organization === 'luxebags' // Brand acts as warehouse with dual role
 
-  // Fetch products (for manufacturer and retailer)
+  // Fetch products (for manufacturer, warehouse and retailer)
   const { data: products, isLoading: productsLoading } = useQuery({
     queryKey: ['products', user?.organization],
     queryFn: async () => {
@@ -128,6 +183,44 @@ export function ProductManagement() {
       return data
     },
     enabled: !!api && !isRetailer
+  })
+
+  // Fetch batches (for manufacturer, warehouse, and retailer)
+  const { data: batches } = useQuery<Batch[]>({
+    queryKey: ['batches', user?.organization],
+    queryFn: async () => {
+      if (!api || (!isManufacturer && !isWarehouse && !isRetailer)) return []
+      const { data } = await api.get<Batch[]>('/api/supply-chain/batches')
+      return data
+    },
+    enabled: !!api && (isManufacturer || isWarehouse || isRetailer)
+  })
+
+  // Fetch stolen products (for retailer and brand)
+  const { data: stolenProducts } = useQuery({
+    queryKey: ['stolen-products'],
+    queryFn: async () => {
+      if (!api || (!isRetailer && user?.organization !== 'luxebags')) return []
+      const { data } = await api.get('/api/supply-chain/ownership/stolen')
+      return data
+    },
+    enabled: !!api && (isRetailer || user?.organization === 'luxebags')
+  })
+
+  // Fetch service records for selected product
+  const { data: serviceRecords } = useQuery({
+    queryKey: ['service-records', selectedProduct?.id],
+    queryFn: async () => {
+      if (!api || !selectedProduct) return []
+      try {
+        const { data } = await api.get(`/api/supply-chain/products/${selectedProduct.id}/service-records`)
+        return data
+      } catch (error) {
+        // Fallback: service records might be part of the product data
+        return selectedProduct.serviceRecords || []
+      }
+    },
+    enabled: !!api && !!selectedProduct?.id
   })
 
   // Filter materials based on selected filter and search
@@ -185,8 +278,9 @@ export function ProductManagement() {
       const { data } = await api.post('/api/supply-chain/materials', materialData)
       return data
     },
-    onSuccess: () => {
+    onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['materials'] })
+      notifications.materialCreated(materialFormData.materialId)
       setShowMaterialForm(false)
       setMaterialFormData({
         materialId: '',
@@ -215,32 +309,50 @@ export function ProductManagement() {
       return data
     },
     onSuccess: (data) => {
+      // Invalidate all relevant queries to refresh data
       queryClient.invalidateQueries({ queryKey: ['materials'] })
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] })
+      queryClient.invalidateQueries({ queryKey: ['pending-transfers'] })
+      
+      // Show success notification with details
+      notifications.materialTransferred(selectedMaterial?.materialId || 'Material', 'manufacturer')
+      toast.success(`Transfer initiated: ${transferQuantity} units of ${selectedMaterial?.type} to manufacturer`)
+      
+      // Reset form
       setShowTransferDialog(false)
       setSelectedMaterial(null)
       setTransferQuantity(1)
-      alert(`Material transfer initiated. Transfer ID: ${data.transferId}. Awaiting manufacturer confirmation.`)
     },
     onError: (error: any) => {
-      alert(`Transfer failed: ${error.response?.data?.error || error.message}`)
+      toast.error(`Transfer failed: ${error.response?.data?.error || error.message}`)
+      // Just use toast for error, notifications doesn't have error method
     }
   })
 
-  // Confirm material receipt (Manufacturer only)
-  const confirmMaterialReceiptMutation = useMutation({
-    mutationFn: async ({ materialId, transferId }: { 
-      materialId: string; 
-      transferId: string 
-    }) => {
+  // Note: Material receipt confirmation is handled in PendingActions component
+  // to keep all pending confirmations in one place
+
+  // Create batch mutation (Manufacturer only)
+  const createBatchMutation = useMutation({
+    mutationFn: async (batchData: typeof batchFormData) => {
       if (!api) throw new Error('API not initialized')
-      const { data } = await api.post(`/api/supply-chain/materials/${materialId}/confirm-receipt`, {
-        transferId
-      })
+      const { data } = await api.post('/api/supply-chain/batches', batchData)
       return data
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['materials'] })
-      alert('Material receipt confirmed successfully!')
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['batches'] })
+      setShowBatchForm(false)
+      notifications.success(`Batch ${data.batchId} created successfully!`)
+      setBatchFormData({
+        brand: 'LuxeBags',
+        productType: '',
+        quantity: 1,
+        materialIds: []
+      })
+      setSelectedMaterials([]) // Reset selected materials
+    },
+    onError: (error: any) => {
+      toast.error(`Failed to create batch: ${error.response?.data?.error || error.message}`)
     }
   })
 
@@ -254,18 +366,50 @@ export function ProductManagement() {
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: ['products'] })
       setShowCreateForm(false)
+      
+      // Show success notification
+      notifications.productCreated(data.productId)
+      
+      // If QR code was generated, show it with proper product details
+      if (data.qrCode) {
+        setQrProduct({
+          id: data.productId,
+          brand: productFormData.brand,
+          name: productFormData.name,
+          type: productFormData.type,
+          serialNumber: productFormData.serialNumber,
+          status: 'CREATED',
+          currentOwner: user?.organization || '',
+          currentLocation: user?.organization || '',
+          createdAt: new Date().toISOString(),
+          qrCode: data.qrCode
+        })
+        setShowQRModal(true)
+      }
+      
+      // Reset form after showing modal
       setProductFormData({
         brand: '',
         name: '',
         type: '',
-        serialNumber: ''
+        serialNumber: '',
+        materials: []
       })
-      
-      // If QR code was generated, show it
-      if (data.qrCode) {
-        setQrProduct(data)
-        setShowQRModal(true)
-      }
+      setSelectedMaterialsForProduct([])
+      setMaterialToAdd({ materialId: '', quantity: 1 })
+    }
+  })
+
+  // Complete product mutation (Manufacturer only)
+  const completeProductMutation = useMutation({
+    mutationFn: async (productId: string) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/complete`)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+      notifications.success('Product marked as complete and ready for transfer!')
     }
   })
 
@@ -293,29 +437,7 @@ export function ProductManagement() {
     }
   })
 
-  // Add quality checkpoint mutation
-  const addQualityCheckpointMutation = useMutation({
-    mutationFn: async (checkpointData: typeof qualityFormData) => {
-      if (!api) throw new Error('API not initialized')
-      const { productId, ...checkpoint } = checkpointData
-      const { data } = await api.post(`/api/supply-chain/products/${productId}/quality`, checkpoint)
-      return data
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['products'] })
-      setShowQualityForm(false)
-      setQualityFormData({
-        productId: '',
-        checkpointId: '',
-        type: '',
-        inspector: '',
-        location: '',
-        passed: true,
-        details: ''
-      })
-      alert('Quality checkpoint added successfully!')
-    }
-  })
+  // Quality checkpoints removed - quality is now implicit in 2-check consensus
 
   // Transfer product mutation (Manufacturer to Retailer, Retailer to Customer)
   const transferProductMutation = useMutation({
@@ -345,6 +467,138 @@ export function ProductManagement() {
     e.preventDefault()
     createProductMutation.mutate(productFormData)
   }
+
+  // Create birth certificate mutation (Retailer only)
+  const createBirthCertificateMutation = useMutation({
+    mutationFn: async (productId: string) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/birth-certificate`)
+      return data
+    },
+    onSuccess: () => {
+      notifications.success('Birth certificate created successfully!')
+    }
+  })
+
+  // Process customer return mutation (Retailer only)
+  const processCustomerReturnMutation = useMutation({
+    mutationFn: async ({ productId, reason }: { productId: string, reason: string }) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/customer-return`, { reason })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+      notifications.success('Customer return processed successfully!')
+    }
+  })
+
+  // Add service record mutation (Retailer/Brand only)
+  const addServiceRecordMutation = useMutation({
+    mutationFn: async ({ productId, serviceType, description, technician }: any) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/service-record`, {
+        serviceType,
+        description,
+        technician,
+        date: new Date().toISOString()
+      })
+      return data
+    },
+    onSuccess: () => {
+      notifications.success('Service record added successfully!')
+    }
+  })
+
+  // Transfer batch mutation (Manufacturer and Warehouse)
+  const transferBatchMutation = useMutation({
+    mutationFn: async ({ batchId, toOrganization }: { batchId: string, toOrganization: string }) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post('/api/supply-chain/batches/transfer', {
+        batchId,
+        toOrganization
+      })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches'] })
+      notifications.success('Batch transferred successfully!')
+    }
+  })
+
+  // Update batch location mutation (Warehouse only)
+  const updateBatchLocationMutation = useMutation({
+    mutationFn: async ({ batchId, location, status }: { batchId: string, location: string, status: string }) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.put(`/api/supply-chain/batches/${batchId}/location`, {
+        location,
+        status
+      })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['batches'] })
+      notifications.success('Batch location updated successfully!')
+    }
+  })
+
+  // Mark for retail mutation (Retailer only)
+  const markForRetailMutation = useMutation({
+    mutationFn: async (productId: string) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/retail`)
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+      notifications.success('Product marked for retail sale!')
+    }
+  })
+
+  // Take ownership mutation (Retailer only - B2C)
+  const takeOwnershipMutation = useMutation({
+    mutationFn: async ({ productId, purchaseLocation }: { productId: string, purchaseLocation: string }) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/take-ownership`, {
+        purchaseLocation
+      })
+      return data
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+      notifications.success('Ownership recorded on blockchain!')
+    }
+  })
+
+  // Sell to customer mutation (Retailer only)
+  const sellToCustomerMutation = useMutation({
+    mutationFn: async ({ productId, customerId, password, pin }: { productId: string, customerId: string, password: string, pin: string }) => {
+      if (!api) throw new Error('API not initialized')
+      const { data } = await api.post(`/api/supply-chain/products/${productId}/sell`, {
+        customerId,
+        password,
+        pin
+      })
+      return data
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['products'] })
+      setShowSellDialog(false)
+      setSelectedProduct(null)
+      
+      // Display ownership confirmation
+      if (data.ownershipHash) {
+        alert(`Product sold successfully!\n\nOwnership transferred to customer.\nOwnership Hash: ${data.ownershipHash.substring(0, 10)}...\n\nCustomer can now verify ownership and transfer to others.`)
+      } else {
+        notifications.success('Product sold to customer successfully!')
+      }
+      
+      setCustomerInfo({ customerId: '', password: '', pin: '' })
+    },
+    onError: (error: any) => {
+      alert(`Failed to sell product: ${error.response?.data?.error || error.message}`)
+    }
+  })
 
   const handleViewQR = async (product: Product) => {
     if (product.qrCode) {
@@ -393,6 +647,8 @@ export function ProductManagement() {
               ? 'Create and manage raw materials'
               : isManufacturer
               ? 'Create products from materials'
+              : isWarehouse
+              ? 'Manage warehouse inventory and batch locations'
               : 'Manage product inventory'
             }
           </p>
@@ -408,13 +664,50 @@ export function ProductManagement() {
             </button>
           )}
           {isManufacturer && (
-            <button
-              onClick={() => setShowCreateForm(!showCreateForm)}
-              className="flex items-center gap-2 px-4 py-2 bg-luxury-gold text-white rounded-lg hover:bg-luxury-dark transition-colors"
-            >
-              <Plus className="w-5 h-5" />
-              Create Product
-            </button>
+            <>
+              <button
+                onClick={() => setShowBatchForm(!showBatchForm)}
+                className="flex items-center gap-2 px-4 py-2 bg-luxury-gold text-white rounded-lg hover:bg-luxury-dark transition-colors mr-2"
+              >
+                <Layers className="w-5 h-5" />
+                Create Batch
+              </button>
+              <button
+                onClick={() => setShowCreateForm(!showCreateForm)}
+                className="flex items-center gap-2 px-4 py-2 bg-luxury-gold text-white rounded-lg hover:bg-luxury-dark transition-colors"
+              >
+                <Plus className="w-5 h-5" />
+                Create Product
+              </button>
+            </>
+          )}
+          {isRetailer && (
+            <div className="flex items-center gap-4">
+              <div className="text-sm text-gray-600 border-l-4 border-luxury-gold pl-3">
+                <div className="font-medium text-gray-800">B2C Workflow:</div>
+                <div className="text-xs mt-1">
+                  1️⃣ Expand batch below → 2️⃣ Click "Sell to Customer" on any product
+                </div>
+              </div>
+              {selectedProduct && (
+                <button
+                  onClick={() => setShowSellDialog(true)}
+                  className="flex items-center gap-2 px-4 py-2 bg-luxury-gold text-white rounded-lg hover:bg-luxury-dark transition-colors"
+                >
+                  <Package className="w-5 h-5" />
+                  Quick Sell
+                </button>
+              )}
+            </div>
+          )}
+          {/* Warehouse status indicator */}
+          {isWarehouse && (
+            <div className="flex items-center gap-2 px-4 py-2 bg-purple-100 text-purple-800 rounded-lg">
+              <Package className="w-5 h-5" />
+              <span className="text-sm font-medium">
+                Warehouse: {batches?.filter((b: any) => b.status === 'IN_WAREHOUSE').length || 0} batches in storage
+              </span>
+            </div>
           )}
         </div>
       </div>
@@ -422,7 +715,7 @@ export function ProductManagement() {
       {/* View Mode Tabs and Search */}
       <div className="bg-white rounded-lg shadow p-4">
         <div className="flex flex-col sm:flex-row gap-4">
-          {/* View Mode Tabs - Only for Manufacturer/Retailer */}
+          {/* View Mode Tabs - For Manufacturer/Warehouse/Retailer */}
           {!isSupplier && (
             <div className="flex bg-gray-100 rounded-lg p-1">
               <button
@@ -580,6 +873,150 @@ export function ProductManagement() {
         </div>
       )}
 
+      {/* Create Batch Form (Manufacturer) */}
+      {showBatchForm && isManufacturer && (
+        <div className="bg-white rounded-lg shadow p-6">
+          <h3 className="text-lg font-semibold mb-4">Create Product Batch</h3>
+          <form onSubmit={(e) => {
+            e.preventDefault()
+            // Include material quantities in the batch data
+            const batchDataWithQuantities = {
+              ...batchFormData,
+              materials: selectedMaterials // Pass materials with quantities
+            }
+            createBatchMutation.mutate(batchDataWithQuantities)
+          }} className="space-y-4">
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Brand</label>
+                <select
+                  value={batchFormData.brand}
+                  onChange={(e) => setBatchFormData({ ...batchFormData, brand: e.target.value })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  required
+                >
+                  <option value="LuxeBags">LuxeBags</option>
+                </select>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Product Type</label>
+                <input
+                  type="text"
+                  value={batchFormData.productType}
+                  onChange={(e) => setBatchFormData({ ...batchFormData, productType: e.target.value })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  placeholder="e.g., Handbag, Wallet"
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Quantity</label>
+                <input
+                  type="number"
+                  min="1"
+                  value={batchFormData.quantity}
+                  onChange={(e) => setBatchFormData({ ...batchFormData, quantity: parseInt(e.target.value) })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  required
+                />
+              </div>
+              <div className="col-span-2">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Materials</label>
+                <div className="space-y-2">
+                  {/* Material selector from available materials */}
+                  <div className="flex gap-2">
+                    <select
+                      value={materialInput}
+                      onChange={(e) => setMaterialInput(e.target.value)}
+                      className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                    >
+                      <option value="">Select a material</option>
+                      {materials?.map((mat: any) => (
+                        <option key={mat.materialId} value={mat.materialId}>
+                          {mat.materialId} - {mat.type} (Available: {mat.available})
+                        </option>
+                      ))}
+                    </select>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (materialInput && !selectedMaterials.find(m => m.id === materialInput)) {
+                          setSelectedMaterials([...selectedMaterials, { id: materialInput, quantity: 1 }])
+                          setBatchFormData({ 
+                            ...batchFormData, 
+                            materialIds: [...batchFormData.materialIds, materialInput]
+                          })
+                          setMaterialInput('')
+                        }
+                      }}
+                      className="px-4 py-2 bg-luxury-gold text-white rounded-md hover:bg-luxury-dark"
+                    >
+                      Add Material
+                    </button>
+                  </div>
+                  
+                  {/* Selected materials with quantities */}
+                  {selectedMaterials.length > 0 && (
+                    <div className="border rounded-md p-3 space-y-2">
+                      <p className="text-sm font-medium text-gray-700">Selected Materials:</p>
+                      {selectedMaterials.map((mat, index) => (
+                        <div key={mat.id} className="flex items-center gap-2">
+                          <span className="flex-1 text-sm">{mat.id}</span>
+                          <input
+                            type="number"
+                            min="0.1"
+                            step="0.1"
+                            value={mat.quantity}
+                            onChange={(e) => {
+                              const newMaterials = [...selectedMaterials]
+                              newMaterials[index].quantity = parseFloat(e.target.value) || 1
+                              setSelectedMaterials(newMaterials)
+                            }}
+                            className="w-24 rounded-md border-gray-300 text-sm"
+                            placeholder="Qty"
+                          />
+                          <span className="text-sm text-gray-500">units</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedMaterials(selectedMaterials.filter((_, i) => i !== index))
+                              setBatchFormData({
+                                ...batchFormData,
+                                materialIds: batchFormData.materialIds.filter(id => id !== mat.id)
+                              })
+                            }}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <p className="text-xs text-gray-500 mt-1">Add materials and specify quantities used for this batch</p>
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setShowBatchForm(false)}
+                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={createBatchMutation.isPending}
+                className="px-4 py-2 bg-luxury-gold text-white rounded-md hover:bg-luxury-dark disabled:opacity-50"
+              >
+                {createBatchMutation.isPending ? 'Creating...' : 'Create Batch'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
+
       {/* Create Product Form (Manufacturer) */}
       {showCreateForm && isManufacturer && (
         <div className="bg-white rounded-lg shadow p-6">
@@ -635,12 +1072,107 @@ export function ProductManagement() {
               </div>
             </div>
 
-            {/* Note about materials */}
-            <div className="bg-blue-50 border border-blue-200 rounded-md p-3">
-              <p className="text-sm text-blue-800">
-                <strong>Note:</strong> Materials can be added after product creation. 
-                Ensure materials have been transferred and received first.
-              </p>
+            {/* Materials Selection */}
+            <div className="space-y-3">
+              <label className="block text-sm font-medium text-gray-700">Add Materials (Optional)</label>
+              
+              {/* Material selector */}
+              <div className="flex gap-2">
+                <select
+                  value={materialToAdd.materialId}
+                  onChange={(e) => {
+                    const mat = materials?.find(m => m.id === e.target.value)
+                    setMaterialToAdd({ 
+                      materialId: e.target.value, 
+                      quantity: 1 
+                    })
+                  }}
+                  className="flex-1 rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                >
+                  <option value="">Select material...</option>
+                  {materials?.filter(m => m.quantity > 0).map(material => (
+                    <option key={material.id} value={material.id}>
+                      {material.materialId} - {material.type} (Available: {material.quantity})
+                    </option>
+                  ))}
+                </select>
+                
+                <input
+                  type="number"
+                  value={materialToAdd.quantity}
+                  onChange={(e) => setMaterialToAdd({ ...materialToAdd, quantity: parseFloat(e.target.value) || 1 })}
+                  className="w-24 rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  placeholder="1"
+                  min="0.01"
+                  step="0.01"
+                />
+                
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (materialToAdd.materialId && materialToAdd.quantity > 0) {
+                      const mat = materials?.find(m => m.id === materialToAdd.materialId)
+                      if (mat && mat.quantity >= materialToAdd.quantity) {
+                        setSelectedMaterialsForProduct([...selectedMaterialsForProduct, {
+                          materialId: mat.materialId || mat.id,  // Use materialId if available, otherwise id
+                          type: mat.type,
+                          batch: mat.batch,
+                          quantity: materialToAdd.quantity,
+                          available: mat.quantity
+                        }])
+                        setProductFormData({
+                          ...productFormData,
+                          materials: [...productFormData.materials, {
+                            id: mat.materialId || mat.id,  // Backend expects 'id', use whichever is available
+                            type: mat.type,
+                            source: mat.source,
+                            supplier: mat.owner || mat.source,  // Use actual owner from material
+                            batch: mat.batch,
+                            verification: 'verified',  // Materials in inventory are already verified via 2-check
+                            quantity: materialToAdd.quantity
+                          }]
+                        })
+                        setMaterialToAdd({ materialId: '', quantity: 1 })
+                      } else {
+                        alert('Insufficient material quantity available')
+                      }
+                    }
+                  }}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-md hover:bg-emerald-700"
+                >
+                  Add
+                </button>
+              </div>
+              
+              {/* Selected materials list */}
+              {selectedMaterialsForProduct.length > 0 && (
+                <div className="border rounded-md p-3">
+                  <p className="text-sm font-medium mb-2">Selected Materials:</p>
+                  <div className="space-y-2">
+                    {selectedMaterialsForProduct.map((mat, idx) => (
+                      <div key={idx} className="flex items-center justify-between text-sm">
+                        <span>{mat.materialId} - {mat.type} (Batch: {mat.batch})</span>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">Qty: {mat.quantity}</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedMaterialsForProduct(selectedMaterialsForProduct.filter((_, i) => i !== idx))
+                              setProductFormData({
+                                ...productFormData,
+                                materials: productFormData.materials.filter((_, i) => i !== idx)
+                              })
+                            }}
+                            className="text-red-600 hover:text-red-800"
+                          >
+                            Remove
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
             
             <div className="flex justify-end gap-2">
@@ -746,119 +1278,339 @@ export function ProductManagement() {
         </div>
       )}
 
-      {/* Quality Checkpoint Form */}
-      {showQualityForm && (
-        <div className="bg-white rounded-lg shadow p-6">
-          <h3 className="text-lg font-semibold mb-4">Add Quality Checkpoint</h3>
-          <p className="text-sm text-gray-600 mb-4">Product ID: {qualityFormData.productId}</p>
-          <form onSubmit={(e) => {
-            e.preventDefault()
-            addQualityCheckpointMutation.mutate(qualityFormData)
-          }} className="space-y-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Checkpoint ID</label>
-                <input
-                  type="text"
-                  value={qualityFormData.checkpointId}
-                  onChange={(e) => setQualityFormData({ ...qualityFormData, checkpointId: e.target.value })}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
-                  placeholder="e.g., QC-001"
-                  required
-                />
+      {/* Quality checkpoints removed - quality is now implicit in 2-check consensus */}
+
+      {/* Bulk Actions Bar - Improved Design */}
+      {selectedProducts.size > 0 && (
+        <div className="bg-gradient-to-r from-blue-50 to-indigo-50 border-l-4 border-blue-500 rounded-lg p-4 mb-6 shadow-sm">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <div className="bg-blue-500 text-white rounded-full w-8 h-8 flex items-center justify-center font-bold">
+                {selectedProducts.size}
               </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Type/Stage</label>
-                <select
-                  value={qualityFormData.type}
-                  onChange={(e) => setQualityFormData({ ...qualityFormData, type: e.target.value })}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
-                  required
+              <span className="font-medium text-gray-800">
+                Product{selectedProducts.size > 1 ? 's' : ''} Selected
+              </span>
+              <button
+                onClick={() => setSelectedProducts(new Set())}
+                className="text-sm text-gray-600 hover:text-gray-800 underline"
+              >
+                Clear all
+              </button>
+            </div>
+            <div className="flex gap-3">
+              {isRetailer && (
+                <button
+                  onClick={async () => {
+                    if (selectedProducts.size === 1) {
+                      // Single product sell
+                      const productId = Array.from(selectedProducts)[0]
+                      let product = products?.find((p: Product) => p.id === productId)
+                      
+                      // If product not in list, fetch it
+                      if (!product && api) {
+                        try {
+                          const response = await api.get(`/api/supply-chain/products/${productId}`)
+                          product = response.data
+                        } catch (error) {
+                          console.error('Failed to fetch product:', error)
+                        }
+                      }
+                      
+                      // Allow sale if product is with retailer and not already sold
+                      if (product && product.status !== 'SOLD' && product.status !== 'TRANSFERRED') {
+                        setSelectedProduct(product)
+                        setShowSellDialog(true)
+                        setSelectedProducts(new Set()) // Clear selection after opening dialog
+                      } else {
+                        alert(`Selected product is not available for sale. Status: ${product?.status || 'Unknown'}`)
+                      }
+                    } else if (selectedProducts.size > 1) {
+                      // Multiple products - process one by one
+                      const availableProducts = Array.from(selectedProducts)
+                        .map(id => products?.find((p: Product) => p.id === id))
+                        .filter(p => p && p.status === 'IN_STORE')
+                      
+                      if (availableProducts.length > 0) {
+                        setSelectedProduct(availableProducts[0] as Product)
+                        setShowSellDialog(true)
+                        alert(`Selling ${availableProducts.length} products. Process them one by one.`)
+                      } else {
+                        alert('No selected products are available for sale')
+                      }
+                    }
+                  }}
+                  className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center gap-2"
                 >
-                  <option value="">Select stage</option>
-                  <option value="material-inspection">Material Inspection</option>
-                  <option value="assembly">Assembly</option>
-                  <option value="finishing">Finishing</option>
-                  <option value="final-inspection">Final Inspection</option>
-                  <option value="packaging">Packaging</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Inspector</label>
-                <input
-                  type="text"
-                  value={qualityFormData.inspector}
-                  onChange={(e) => setQualityFormData({ ...qualityFormData, inspector: e.target.value })}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
-                  placeholder="Inspector name"
-                  required
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-700">Location</label>
-                <input
-                  type="text"
-                  value={qualityFormData.location}
-                  onChange={(e) => setQualityFormData({ ...qualityFormData, location: e.target.value })}
-                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
-                  placeholder="e.g., Workshop Floor 2"
-                  required
-                />
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-2">Status</label>
-              <div className="flex gap-4">
-                <label className="flex items-center">
-                  <input
-                    type="radio"
-                    checked={qualityFormData.passed === true}
-                    onChange={() => setQualityFormData({ ...qualityFormData, passed: true })}
-                    className="mr-2 text-luxury-gold focus:ring-luxury-gold"
-                  />
-                  <span className="text-sm">Passed</span>
-                </label>
-                <label className="flex items-center">
-                  <input
-                    type="radio"
-                    checked={qualityFormData.passed === false}
-                    onChange={() => setQualityFormData({ ...qualityFormData, passed: false })}
-                    className="mr-2 text-luxury-gold focus:ring-luxury-gold"
-                  />
-                  <span className="text-sm">Failed</span>
-                </label>
-              </div>
-            </div>
-            
-            <div>
-              <label className="block text-sm font-medium text-gray-700">Details/Notes</label>
-              <textarea
-                value={qualityFormData.details}
-                onChange={(e) => setQualityFormData({ ...qualityFormData, details: e.target.value })}
-                className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
-                rows={3}
-                placeholder="Quality check details and observations"
-              />
-            </div>
-            
-            <div className="flex justify-end gap-2">
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 3h2l.4 2M7 13h10l4-8H5.4M7 13L5.4 5M7 13l-2.293 2.293c-.63.63-.184 1.707.707 1.707H17m0 0a2 2 0 100 4 2 2 0 000-4zm-8 2a2 2 0 11-4 0 2 2 0 014 0z" />
+                  </svg>
+                  Sell to Customer
+                </button>
+              )}
               <button
-                type="button"
-                onClick={() => setShowQualityForm(false)}
-                className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                onClick={() => {
+                  alert(`Transfer ${selectedProducts.size} products - Coming soon`)
+                }}
+                className="px-4 py-2 bg-luxury-gold text-white rounded-lg hover:bg-luxury-dark transition-colors flex items-center gap-2"
               >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                disabled={addQualityCheckpointMutation.isPending}
-                className="px-4 py-2 bg-luxury-gold text-white rounded-md hover:bg-luxury-dark disabled:opacity-50"
-              >
-                {addQualityCheckpointMutation.isPending ? 'Adding...' : 'Add Checkpoint'}
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                Transfer
               </button>
             </div>
-          </form>
+          </div>
+        </div>
+      )}
+
+      {/* Batches List (Manufacturer, Warehouse, and Retailer) */}
+      {(isManufacturer || isWarehouse || isRetailer) && batches && batches.length > 0 && (viewMode === 'all' || viewMode === 'products') && (
+        <div className="bg-white rounded-lg shadow mb-6">
+          <div className="px-6 py-4 border-b border-gray-200">
+            <div className="flex items-center justify-between">
+              <h3 className="text-lg font-semibold">Product Batches</h3>
+              <span className="text-sm text-gray-500">
+                Total: {batches.length} batches
+              </span>
+            </div>
+          </div>
+          <div className="divide-y divide-gray-200">
+            {batches.slice(0, 5).map((batch: any) => (
+              <div key={batch.id} className="p-4 hover:bg-gray-50">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={async () => {
+                          const newExpanded = new Set(expandedBatches)
+                          if (newExpanded.has(batch.id)) {
+                            newExpanded.delete(batch.id)
+                          } else {
+                            newExpanded.add(batch.id)
+                            // Fetch product details for all products in the batch
+                            if (api && batch.productIds) {
+                              try {
+                                const fetchPromises = batch.productIds.map((productId: string) => 
+                                  api.get(`/api/supply-chain/products/${productId}`)
+                                )
+                                const responses = await Promise.allSettled(fetchPromises)
+                                const fetchedProducts = responses
+                                  .filter(r => r.status === 'fulfilled')
+                                  .map((r: any) => r.value.data)
+                                
+                                // Update products state with fetched products if not already present
+                                if (fetchedProducts.length > 0) {
+                                  queryClient.invalidateQueries({ queryKey: ['products'] })
+                                }
+                              } catch (error) {
+                                console.error('Failed to fetch batch products:', error)
+                              }
+                            }
+                          }
+                          setExpandedBatches(newExpanded)
+                        }}
+                        className="text-gray-500 hover:text-gray-700"
+                      >
+                        {expandedBatches.has(batch.id) ? (
+                          <ChevronDown className="w-4 h-4" />
+                        ) : (
+                          <ChevronRight className="w-4 h-4" />
+                        )}
+                      </button>
+                      <h4 className="font-medium text-gray-900">
+                        {batch.id}
+                      </h4>
+                    </div>
+                    <p className="text-sm text-gray-600 ml-6">
+                      {batch.brand} • {batch.productType} • Qty: {batch.quantity}
+                    </p>
+                    <p className="text-xs text-gray-500 mt-1 ml-6">
+                      Status: {batch.status} • Location: {batch.location || batch.currentOwner || 'Manufacturer'}
+                    </p>
+                    
+                    {/* Expanded products view - Improved Design */}
+                    {expandedBatches.has(batch.id) && batch.productIds && (
+                      <div className="mt-4 ml-6 mr-2 p-4 bg-gradient-to-br from-gray-50 to-gray-100 rounded-xl border border-gray-200">
+                        <div className="flex items-center justify-between mb-4">
+                          <div className="flex items-center gap-2">
+                            <div className="w-2 h-2 bg-luxury-gold rounded-full"></div>
+                            <span className="text-sm font-semibold text-gray-800">
+                              {batch.productIds.length} Products in Batch
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3">
+                            {selectedProducts.size > 0 && (
+                              <span className="bg-blue-100 text-blue-700 px-2 py-1 rounded-full text-xs font-medium">
+                                {Array.from(selectedProducts).filter(id => batch.productIds?.includes(id)).length} selected
+                              </span>
+                            )}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation()
+                                const allProductIds = batch.productIds || []
+                                const allSelected = allProductIds.every((id: string) => selectedProducts.has(id))
+                                if (allSelected) {
+                                  // Deselect all
+                                  const newSelected = new Set(selectedProducts)
+                                  allProductIds.forEach((id: string) => newSelected.delete(id))
+                                  setSelectedProducts(newSelected)
+                                } else {
+                                  // Select all
+                                  const newSelected = new Set(selectedProducts)
+                                  allProductIds.forEach((id: string) => newSelected.add(id))
+                                  setSelectedProducts(newSelected)
+                                }
+                              }}
+                              className="text-xs px-3 py-1.5 bg-white border border-gray-300 text-gray-700 rounded-lg hover:bg-gray-50 transition-colors"
+                            >
+                              {batch.productIds?.every((id: string) => selectedProducts.has(id)) ? '☐ Deselect All' : '☑ Select All'}
+                            </button>
+                          </div>
+                        </div>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                          {batch.productIds.slice(0, 12).map((productId: string) => {
+                            const product = products?.find((p: Product) => p.id === productId)
+                            const isSelected = selectedProducts.has(productId)
+                            return (
+                              <div 
+                                key={productId} 
+                                className={`relative group rounded-lg p-3 cursor-pointer transition-all transform hover:scale-[1.02] ${
+                                  isSelected 
+                                    ? 'bg-gradient-to-br from-luxury-cream to-yellow-50 border-2 border-luxury-gold shadow-md' 
+                                    : 'bg-white border border-gray-200 hover:border-gray-400 hover:shadow-md'
+                                }`}
+                                onClick={(e) => {
+                                  e.stopPropagation()
+                                  const newSelected = new Set(selectedProducts)
+                                  if (isSelected) {
+                                    newSelected.delete(productId)
+                                  } else {
+                                    newSelected.add(productId)
+                                  }
+                                  setSelectedProducts(newSelected)
+                                }}
+                              >
+                                {/* Selection indicator */}
+                                <div className={`absolute -top-2 -right-2 w-6 h-6 rounded-full flex items-center justify-center transition-all ${
+                                  isSelected ? 'bg-luxury-gold text-white' : 'bg-gray-300 text-gray-600 opacity-0 group-hover:opacity-100'
+                                }`}>
+                                  {isSelected ? '✓' : ''}
+                                </div>
+                                
+                                <div className="space-y-2">
+                                  <div className="flex items-start justify-between">
+                                    <div className="flex-1 min-w-0">
+                                      <div className="font-semibold text-sm text-gray-900 truncate" title={product?.name || productId}>
+                                        {product?.name || productId}
+                                      </div>
+                                      <div className="text-xs text-gray-500 font-mono truncate" title={productId}>
+                                        {productId}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  
+                                  {product && (
+                                    <>
+                                      <div className="flex items-center gap-2">
+                                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                                          product.status === 'IN_STORE' 
+                                            ? 'bg-green-100 text-green-800' 
+                                            : product.status === 'SOLD'
+                                            ? 'bg-gray-100 text-gray-800'
+                                            : 'bg-yellow-100 text-yellow-800'
+                                        }`}>
+                                          {product.status.replace('_', ' ')}
+                                        </span>
+                                      </div>
+                                      
+                                      {isRetailer && product.status === 'IN_STORE' && (
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation()
+                                            setSelectedProduct(product)
+                                            setShowSellDialog(true)
+                                          }}
+                                          className="w-full mt-2 px-3 py-1.5 bg-green-600 text-white text-xs font-medium rounded-md hover:bg-green-700 transition-colors"
+                                        >
+                                          Quick Sell
+                                        </button>
+                                      )}
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            )
+                          })}
+                          {batch.productIds.length > 12 && (
+                            <div className="flex items-center justify-center p-3 bg-gray-50 rounded-lg border-2 border-dashed border-gray-300">
+                              <span className="text-sm text-gray-600 font-medium">
+                                +{batch.productIds.length - 12} more products
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex gap-2">
+                    {/* Warehouse-specific actions */}
+                    {isWarehouse && batch.status === 'IN_TRANSIT' && (
+                      <button
+                        onClick={() => {
+                          const location = prompt('Enter warehouse location (e.g., Section A, Shelf 5):')
+                          if (location) {
+                            updateBatchLocationMutation.mutate({
+                              batchId: batch.id,
+                              location,
+                              status: 'IN_WAREHOUSE'
+                            })
+                          }
+                        }}
+                        disabled={updateBatchLocationMutation.isPending}
+                        className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        Receive & Store
+                      </button>
+                    )}
+                    
+                    {/* Transfer button for both manufacturer and warehouse */}
+                    {batch.status !== 'TRANSFERRED' && batch.status !== 'SOLD' && (
+                      <button
+                        onClick={() => {
+                          const toOrg = isManufacturer 
+                            ? prompt('Transfer to (luxebags for warehouse or luxuryretail for direct):')
+                            : prompt('Transfer to retailer (luxuryretail):')
+                          if (toOrg) {
+                            transferBatchMutation.mutate({
+                              batchId: batch.id,
+                              toOrganization: toOrg
+                            })
+                          }
+                        }}
+                        disabled={transferBatchMutation.isPending}
+                        className="px-3 py-1 text-sm bg-luxury-gold text-white rounded hover:bg-luxury-dark disabled:opacity-50"
+                      >
+                        Transfer Batch
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        api?.get(`/api/supply-chain/batches/${batch.id}/products`)
+                          .then(res => {
+                            alert(`Products in batch: ${JSON.stringify(res.data, null, 2)}`)
+                          })
+                          .catch(err => alert('Failed to fetch batch products'))
+                      }}
+                      className="px-3 py-1 text-sm border border-gray-300 rounded hover:bg-gray-50"
+                    >
+                      View Products
+                    </button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       )}
 
@@ -1052,6 +1804,30 @@ export function ProductManagement() {
         </div>
       )}
 
+      {/* Stolen Products Alert (Retailer & Brand) */}
+      {stolenProducts && stolenProducts.length > 0 && (isRetailer || user?.organization === 'luxebags') && (
+        <div className="bg-red-50 border border-red-200 rounded-lg p-4 mb-6">
+          <div className="flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-red-600 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="font-semibold text-red-900 mb-2">Stolen Products Alert</h3>
+              <div className="space-y-2">
+                {stolenProducts.slice(0, 3).map((product: any) => (
+                  <div key={product.id} className="text-sm text-red-700">
+                    • {product.name} (SN: {product.serialNumber}) - Reported: {new Date(product.reportedAt).toLocaleDateString()}
+                  </div>
+                ))}
+                {stolenProducts.length > 3 && (
+                  <div className="text-sm text-red-600 font-medium">
+                    + {stolenProducts.length - 3} more stolen products
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Products List (Manufacturer & Retailer) */}
       {!isSupplier && filteredProducts.length > 0 && (viewMode === 'all' || viewMode === 'products') && (
         <div className="bg-white rounded-lg shadow">
@@ -1113,8 +1889,8 @@ export function ProductManagement() {
                         </button>
                         <button
                           onClick={() => {
-                            setQualityFormData({ ...qualityFormData, productId: product.id })
-                            setShowQualityForm(true)
+                            // Quality checkpoints removed
+                            console.log('Quality is now implicit in 2-check consensus')
                           }}
                           className="flex items-center gap-1 px-2 py-1 text-xs bg-blue-600 text-white rounded hover:bg-blue-700"
                           title="Add Quality Check"
@@ -1124,7 +1900,21 @@ export function ProductManagement() {
                         </button>
                       </>
                     )}
-                    {user?.organization === product.currentOwner && (
+                    {/* Retailer B2C Actions */}
+                    {isRetailer && product.currentOwner === user?.organization && product.status === 'IN_STORE' && (
+                      <button
+                        onClick={() => {
+                          setSelectedProduct(product)
+                          setShowSellDialog(true)
+                        }}
+                        className="flex items-center gap-1 px-3 py-1.5 text-sm bg-green-600 text-white rounded-md hover:bg-green-700"
+                      >
+                        <Send className="w-4 h-4" />
+                        Sell to Customer
+                      </button>
+                    )}
+                    {/* Other organizations transfer */}
+                    {!isRetailer && user?.organization === product.currentOwner && (
                       <button
                         onClick={() => {
                           const toOrg = isManufacturer ? 'luxuryretail' : 'customer'
@@ -1208,6 +1998,301 @@ export function ProductManagement() {
         </div>
       )}
 
+      {/* Product Details Modal */}
+      {selectedProduct && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-start mb-4">
+              <h3 className="text-xl font-semibold">Product Details</h3>
+              <button
+                onClick={() => setSelectedProduct(null)}
+                className="p-1 hover:bg-gray-100 rounded"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            <div className="space-y-4">
+              {/* Basic Information */}
+              <div className="border-b pb-4">
+                <h4 className="font-medium mb-2">Basic Information</h4>
+                <div className="grid grid-cols-2 gap-2 text-sm">
+                  <div><span className="font-medium">Product ID:</span> {selectedProduct.id}</div>
+                  <div><span className="font-medium">Serial Number:</span> {selectedProduct.serialNumber}</div>
+                  <div><span className="font-medium">Brand:</span> {selectedProduct.brand}</div>
+                  <div><span className="font-medium">Name:</span> {selectedProduct.name}</div>
+                  <div><span className="font-medium">Type:</span> {selectedProduct.type}</div>
+                  <div><span className="font-medium">Status:</span> {selectedProduct.status}</div>
+                  <div><span className="font-medium">Current Owner:</span> {selectedProduct.currentOwner}</div>
+                  <div><span className="font-medium">Created:</span> {new Date(selectedProduct.createdAt).toLocaleDateString()}</div>
+                </div>
+              </div>
+              
+              {/* Materials */}
+              {selectedProduct.materials && selectedProduct.materials.length > 0 && (
+                <div className="border-b pb-4">
+                  <h4 className="font-medium mb-2">Materials Used</h4>
+                  <div className="space-y-1 text-sm">
+                    {selectedProduct.materials.map((material: any, idx: number) => (
+                      <div key={idx} className="flex justify-between">
+                        <span>{material.materialID} - {material.type} (Batch: {material.batch})</span>
+                        <span className="text-gray-600">{material.verification}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Quality Checkpoints */}
+              {selectedProduct.qualityCheckpoints && selectedProduct.qualityCheckpoints.length > 0 && (
+                <div className="border-b pb-4">
+                  <h4 className="font-medium mb-2">Quality Checkpoints</h4>
+                  <div className="space-y-2 text-sm">
+                    {selectedProduct.qualityCheckpoints.map((checkpoint: any, idx: number) => (
+                      <div key={idx} className="flex items-center justify-between">
+                        <div>
+                          <span className="font-medium">{checkpoint.type}</span>
+                          <span className="text-gray-600 ml-2">by {checkpoint.inspector}</span>
+                        </div>
+                        <span className={checkpoint.passed ? 'text-green-600' : 'text-red-600'}>
+                          {checkpoint.passed ? '✓ Passed' : '✗ Failed'}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Transfer History */}
+              {selectedProduct.transferHistory && selectedProduct.transferHistory.length > 0 && (
+                <div className="border-b pb-4">
+                  <h4 className="font-medium mb-2">Transfer History</h4>
+                  <div className="space-y-2 text-sm">
+                    {selectedProduct.transferHistory.map((transfer: any, idx: number) => (
+                      <div key={idx} className="flex justify-between">
+                        <span>{transfer.from} → {transfer.to}</span>
+                        <span className="text-gray-600">{new Date(transfer.timestamp).toLocaleDateString()}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+              
+              {/* Service Records */}
+              {(serviceRecords && serviceRecords.length > 0) && (
+                <div>
+                  <h4 className="font-medium mb-2">Service Records</h4>
+                  <div className="space-y-2 text-sm">
+                    {serviceRecords.map((record: any, idx: number) => (
+                      <div key={idx} className="border rounded p-2 bg-gray-50">
+                        <div className="flex justify-between items-start">
+                          <div>
+                            <span className="font-medium">{record.serviceType}</span>
+                            <p className="text-gray-600 text-xs mt-1">{record.description}</p>
+                            <p className="text-gray-500 text-xs mt-1">By: {record.technician}</p>
+                          </div>
+                          <span className="text-xs text-gray-500">
+                            {new Date(record.timestamp || record.date).toLocaleDateString()}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+            
+            {/* Action Buttons for Manufacturer */}
+            {isManufacturer && selectedProduct && selectedProduct.status === 'CREATED' && (
+              <div className="mt-4 p-4 bg-blue-50 rounded-lg">
+                <h4 className="text-sm font-medium text-blue-700 mb-3">Manufacturer Actions</h4>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => {
+                      if (confirm('Mark this product as complete and ready for transfer?')) {
+                        completeProductMutation.mutate(selectedProduct.id)
+                      }
+                    }}
+                    disabled={completeProductMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {completeProductMutation.isPending ? 'Completing...' : 'Complete Product'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setAddMaterialFormData({ 
+                        ...addMaterialFormData, 
+                        productId: selectedProduct.id 
+                      })
+                      setShowAddMaterialToProduct(true)
+                      setSelectedProduct(null)
+                    }}
+                    className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                  >
+                    Add Materials
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {/* Action Buttons for Warehouse */}
+            {isWarehouse && selectedProduct && (
+              <div className="mt-4 p-4 bg-purple-50 rounded-lg">
+                <h4 className="text-sm font-medium text-purple-700 mb-3">Warehouse Actions</h4>
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    onClick={() => {
+                      const serviceType = prompt('Service type (inspection/storage/maintenance):')
+                      const description = prompt('Service description:')
+                      const technician = prompt('Warehouse staff name:')
+                      if (serviceType && description && technician) {
+                        addServiceRecordMutation.mutate({
+                          productId: selectedProduct.id,
+                          serviceType,
+                          description,
+                          technician
+                        })
+                      }
+                    }}
+                    disabled={addServiceRecordMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    {addServiceRecordMutation.isPending ? 'Adding...' : 'Add Service Record'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const location = prompt('Enter storage location (e.g., Section B, Shelf 3):')
+                      if (location) {
+                        // This would update the product's location in warehouse
+                        api?.put(`/api/supply-chain/products/${selectedProduct.id}/location`, { location })
+                          .then(() => {
+                            notifications.success('Product location updated')
+                            queryClient.invalidateQueries({ queryKey: ['products'] })
+                          })
+                          .catch(() => toast.error('Failed to update location'))
+                      }
+                    }}
+                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
+                  >
+                    Update Location
+                  </button>
+                  <button
+                    onClick={() => {
+                      const toOrg = prompt('Transfer to retailer (luxuryretail):')
+                      if (toOrg === 'luxuryretail') {
+                        transferProductMutation.mutate({
+                          productId: selectedProduct.id,
+                          toOrganization: toOrg
+                        })
+                      }
+                    }}
+                    disabled={transferProductMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700 disabled:opacity-50"
+                  >
+                    {transferProductMutation.isPending ? 'Transferring...' : 'Transfer to Retailer'}
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            {/* Action Buttons for Retailers */}
+            {isRetailer && selectedProduct.status !== 'SOLD' && (
+              <div className="mt-4 p-4 bg-gray-50 rounded-lg">
+                <h4 className="text-sm font-medium text-gray-700 mb-3">Retailer Actions</h4>
+                <div className="flex flex-wrap gap-2">
+                  {selectedProduct.status !== 'RETAIL' && (
+                    <button
+                      onClick={() => {
+                        markForRetailMutation.mutate(selectedProduct.id)
+                      }}
+                      disabled={markForRetailMutation.isPending}
+                      className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+                    >
+                      {markForRetailMutation.isPending ? 'Marking...' : 'Mark for Retail'}
+                    </button>
+                  )}
+                  <button
+                    onClick={() => {
+                      const location = prompt('Enter store location:')
+                      if (location) {
+                        takeOwnershipMutation.mutate({ 
+                          productId: selectedProduct.id, 
+                          purchaseLocation: location 
+                        })
+                      }
+                    }}
+                    disabled={takeOwnershipMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-indigo-600 text-white rounded hover:bg-indigo-700 disabled:opacity-50"
+                  >
+                    {takeOwnershipMutation.isPending ? 'Recording...' : 'Take Ownership'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      createBirthCertificateMutation.mutate(selectedProduct.id)
+                    }}
+                    disabled={createBirthCertificateMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {createBirthCertificateMutation.isPending ? 'Creating...' : 'Create Birth Certificate'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      setShowSellDialog(true)
+                    }}
+                    className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+                  >
+                    Sell to Customer
+                  </button>
+                  <button
+                    onClick={() => {
+                      const reason = prompt('Enter return reason:')
+                      if (reason) {
+                        processCustomerReturnMutation.mutate({ 
+                          productId: selectedProduct.id, 
+                          reason 
+                        })
+                      }
+                    }}
+                    disabled={processCustomerReturnMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-orange-600 text-white rounded hover:bg-orange-700 disabled:opacity-50"
+                  >
+                    {processCustomerReturnMutation.isPending ? 'Processing...' : 'Process Return'}
+                  </button>
+                  <button
+                    onClick={() => {
+                      const serviceType = prompt('Service type (repair/cleaning/authentication):')
+                      const description = prompt('Service description:')
+                      const technician = prompt('Technician name:')
+                      if (serviceType && description && technician) {
+                        addServiceRecordMutation.mutate({
+                          productId: selectedProduct.id,
+                          serviceType,
+                          description,
+                          technician
+                        })
+                      }
+                    }}
+                    disabled={addServiceRecordMutation.isPending}
+                    className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+                  >
+                    {addServiceRecordMutation.isPending ? 'Adding...' : 'Add Service Record'}
+                  </button>
+                </div>
+              </div>
+            )}
+            
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={() => setSelectedProduct(null)}
+                className="px-4 py-2 bg-gray-200 text-gray-800 rounded-lg hover:bg-gray-300"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* QR Code Modal */}
       {showQRModal && qrProduct && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -1223,7 +2308,7 @@ export function ProductManagement() {
                   />
                 ) : qrProduct.qrCode?.url ? (
                   <img 
-                    src={qrProduct.qrCode.url} 
+                    src={api ? `${api.defaults.baseURL}${qrProduct.qrCode.url}` : qrProduct.qrCode.url} 
                     alt="QR Code" 
                     className="mx-auto"
                   />
@@ -1328,6 +2413,87 @@ export function ProductManagement() {
                   className="px-4 py-2 bg-luxury-gold text-white rounded-md hover:bg-luxury-dark disabled:opacity-50"
                 >
                   {transferMaterialMutation.isPending ? 'Transferring...' : 'Transfer'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Sell to Customer Dialog (Retailer only) */}
+      {showSellDialog && selectedProduct && isRetailer && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 w-full max-w-md">
+            <h3 className="text-lg font-semibold mb-4">Sell Product to Customer</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Product</label>
+                <p className="mt-1 text-sm text-gray-600">
+                  {selectedProduct.name} - {selectedProduct.serialNumber}
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Customer Email or Phone</label>
+                <input
+                  type="text"
+                  value={customerInfo.customerId}
+                  onChange={(e) => setCustomerInfo({ ...customerInfo, customerId: e.target.value })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  placeholder="customer@email.com or +1234567890"
+                  required
+                />
+                <p className="mt-1 text-xs text-gray-500">This will be hashed for privacy</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">Customer Password</label>
+                <input
+                  type="password"
+                  value={customerInfo.password}
+                  onChange={(e) => setCustomerInfo({ ...customerInfo, password: e.target.value })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  placeholder="Set customer password"
+                  required
+                />
+                <p className="mt-1 text-xs text-gray-500">Customer will need this for transfers</p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700">4-Digit PIN</label>
+                <input
+                  type="text"
+                  maxLength={4}
+                  pattern="[0-9]{4}"
+                  value={customerInfo.pin}
+                  onChange={(e) => setCustomerInfo({ ...customerInfo, pin: e.target.value.replace(/\D/g, '') })}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-luxury-gold focus:ring-luxury-gold"
+                  placeholder="0000"
+                  required
+                />
+                <p className="mt-1 text-xs text-gray-500">Additional security for ownership transfers</p>
+              </div>
+              <div className="flex justify-end gap-2 mt-4">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSellDialog(false)
+                    setCustomerInfo({ customerId: '', password: '', pin: '' })
+                  }}
+                  className="px-4 py-2 border border-gray-300 rounded-md text-gray-700 hover:bg-gray-50"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    sellToCustomerMutation.mutate({
+                      productId: selectedProduct.id,
+                      customerId: customerInfo.customerId,
+                      password: customerInfo.password,
+                      pin: customerInfo.pin
+                    })
+                  }}
+                  disabled={sellToCustomerMutation.isPending || !customerInfo.customerId || !customerInfo.password || customerInfo.pin.length !== 4}
+                  className="px-4 py-2 bg-luxury-gold text-white rounded-md hover:bg-luxury-dark disabled:opacity-50"
+                >
+                  {sellToCustomerMutation.isPending ? 'Processing...' : 'Sell Product'}
                 </button>
               </div>
             </div>
