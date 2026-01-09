@@ -74,3 +74,5 @@ backend/uploads/*/*.json
 backend/uploads/*/*.png
 backend/dist
 /backend/customer-gateway/node_modules
+/report
+/backend/customer-gateway/dist
